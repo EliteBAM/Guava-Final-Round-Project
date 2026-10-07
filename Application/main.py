@@ -1,7 +1,6 @@
-"""Example inbound Guava voice agent, scaffolded by `guava create`.
-
-Run `guava run` from your project directory to call in and talk to it. Edit the
-tasks and handlers below, then re-run to hear your changes.
+"""
+Guava Legal Intake Specialist Agent taylored for Morgan and Morgan injury law firm on-spec.
+Engineer: Robert Gehr 10-07-2026
 """
 
 import logging
@@ -9,65 +8,103 @@ from pathlib import Path
 
 import guava
 from guava import logging_utils
-from guava.events import BotSessionEnded
+from guava.events import AgentSpeechEvent, BotSessionEnded
 from guava.helpers.rag import DocumentQA
+
+import compliance
+import timezones
 
 logger = logging.getLogger("guava.intro_agent")
 
 CURRENT_DIR = Path(__file__).resolve().parent
 
+# begin by loading RAG documents from project directory and save it in a DocumentQA Guava Object.
+# explicit utf-8: Windows defaults to cp1252 and fails to decode the docs
 try:
-    with open(CURRENT_DIR / "guava-docs.md", "r") as f:
+    with open(CURRENT_DIR / "guava-docs.md", "r", encoding="utf-8") as f:
         document_qa = DocumentQA(documents=f.read(), namespace="guava-cli-intro")
 
 except Exception as exc:
     document_qa = None
     logger.warning("Could not load Guava docs for RAG: %s", exc)
 
+# after rag passed or failed, create an agent instance
 agent = guava.Agent(
+    name="Melody",
+    organization="Morgan and Morgan",
     purpose=(
-        "You are an example voice agent shipped with the Guava CLI to show "
-        "the user they've successfully launched a working agent. Answer their "
-        "questions about the Guava platform, SDK, and CLI from your connected "
-        "knowledge base."
+        "You are Morgan and Morgan's AI intake assistant for people who may have a personal injury case. "
+        "You gather facts only: you never give legal advice, and never give opinions on fault, case strength, or case value. "
+        "If anyone asks whether you are a real person, honestly confirm that you are an AI. "
+        "Callers are often hurt or shaken, so be warm, calm and patient, but never salesy. "
+        + compliance.RECORDING_POLICY
     ),
 )
 
+# per-call state, keyed by call.id. Never module globals per call: concurrent calls would share them.
+CALL_STATE: dict[str, dict] = {}
 
+# tasks during which the agent's speech is captured for the disclosure check
+DISCLOSURE_TASKS = ("disclosures", "consent_reconsider")
+
+
+def call_state(call: guava.Call) -> dict:
+    return CALL_STATE.setdefault(call.id, {
+        "task": None,
+        "disclosure_speech": [],
+        "disclosure_retries": 0,
+        "flags": set(),
+        "disposition": None,
+    })
+
+
+# setting up the agent - defining callback functions for the agent
 @agent.on_call_start
 def on_call_start(call: guava.Call):
+    # no network I/O in here: the call isn't answered until this handler returns
+    state = call_state(call)
+
+    # recognize time of day for politeness and warmness in greeting. Feels less like a robot.
+    # non-phone calls (webrtc, local) fall back to the firm's timezone
+    from_number = call.call_info.from_number if call.call_info.call_type == "pstn" else None
+    caller_time_of_day = timezones.get_time_of_day_str(timezones.get_timezone_for_number(from_number))
+    greeting = f"Good {caller_time_of_day}. " if caller_time_of_day else ""
+
+    # on call start, set some initial tasks and record log for session start
     logger.info("Call started (session: %s)", call.id)
+    state["task"] = "introduction"
     call.set_task(
-        "intro",
+        "introduction",
         objective=(
-            "Walk the caller through a short introduction, then shift to "
-            "answering their questions about Guava from your knowledge base. "
-            "Complete the task once they have no more questions."
+            "Introduce yourself, your role, and collect the caller's name."
         ),
         checklist=[
+            # carries the one immediate AI disclosure (Op. 24-1); the rest happen in the disclosures task
             guava.Say(
-                "Hi! I'm a Guava voice agent, and you just launched me "
-                "using the Guava CLI. I can answer your questions about "
-                "using Guava."
+                f"{greeting}"
+                "Thank you for calling Morgan and Morgan personal injury attorneys. "
+                "My name is Melody, and I'm your legal intake specialist, powered by modern artificial intelligence. "
+                "I'm here to listen and understand what you are going through and take you through the first steps toward legal representation."
             ),
             guava.Field(
-                key="user_name",
+                key="caller_name",
                 field_type="text",
-                description="Transition with 'But first,' then ask the caller for their name so you can address them personally.",
-                required=False,
+                description="Transition with 'May I,' then ask the caller for their name so you can address them personally.",
+                required=True,
             ),
-            "Answer any questions the caller has about Guava.",
-            "Once the caller has no more questions, welcome them to Guava. "
-            "Point them to the Guava docs and examples library as resources "
-            "for building their own agent. Express that the team would love "
-            'to "hear what you build." Close warmly.',
         ],
     )
 
 
+# on question callback executes when agent determines it can't give a good answer contextually. Either an a place for autmated fallback, or RAG activation.
 @agent.on_question
 def on_question(call: guava.Call, question: str) -> str:
     logger.info("Question received: %s", question)
+
+    # recording questions get the one approved, truthful answer from code, never RAG or the model's guess
+    if compliance.is_recording_question(question):
+        return compliance.RECORDING_ANSWER
+
     if document_qa is not None:
         answer = document_qa.ask(question)
     else:
@@ -80,21 +117,135 @@ def on_question(call: guava.Call, question: str) -> str:
     return answer
 
 
-@agent.on_task_complete("intro")
+@agent.on_task_complete("introduction")
 def on_intro_complete(call: guava.Call):
-    user_name = call.get_field("user_name")
-    if user_name:
-        logger.info("Intro task complete. Caller name: %s", user_name)
-    else:
-        logger.info("Intro task complete.")
-    call.hangup()
+    caller_name = call.get_field("caller_name")
+    if caller_name:
+        logger.info("Intro task complete. Caller name: %s", caller_name)
+    start_disclosures(call)
+
+
+def start_disclosures(call: guava.Call):
+    state = call_state(call)
+    state["task"] = "disclosures"
+    state["disclosure_speech"].clear()
+    call.set_task(
+        "disclosures",
+        objective="Deliver the required disclosures exactly, then get the caller's consent to record the call.",
+        checklist=[
+            # bridge as a plain string (Todo) so the model phrases it warmly in context
+            "Thank the caller by name, and politely let them know that before you begin there are a few "
+            "disclosures you're required to share with them.",
+            guava.Say(compliance.DISCLOSURE_SCRIPT),
+            guava.Field(
+                key="recording_consent",
+                field_type="multiple_choice",
+                choices=["yes", "no"],
+                question="Is it alright with you that this call is recorded?",
+                description=compliance.CONSENT_FIELD_GUIDANCE,
+                required=True,
+            ),
+        ],
+    )
+
+
+# capture what the agent actually said during the disclosures, so code (not the model) decides if they were delivered
+@agent.on_agent_speech
+def on_agent_speech(call: guava.Call, event: AgentSpeechEvent):
+    state = call_state(call)
+    if state["task"] in DISCLOSURE_TASKS:
+        state["disclosure_speech"].append(event.utterance)
+
+
+# runs when the disclosures task reports complete; returning (False, reason) makes the SDK retry the task
+@agent.on_validate("recording_consent")
+def validate_disclosures_spoken(call: guava.Call, value) -> bool | tuple[bool, str]:
+    state = call_state(call)
+    missing = compliance.missing_disclosure_phrases(" ".join(state["disclosure_speech"]))
+    if not missing:
+        return True
+
+    if state["disclosure_retries"] < 1:
+        state["disclosure_retries"] += 1
+        logger.info("Disclosures incomplete (missing %s), retrying task (session: %s)", missing, call.id)
+        return (
+            False,
+            "The required disclosures were not read in full. Read the disclosure statement exactly as written, "
+            "then ask for consent to record again.",
+        )
+
+    # retry cap hit: don't loop the caller, flag the call for human review instead
+    state["flags"].add("disclosure_unverified")
+    logger.warning("Disclosures still unverified after retry, missing %s (session: %s)", missing, call.id)
+    return True
+
+
+@agent.on_task_complete("disclosures")
+def on_disclosures_complete(call: guava.Call):
+    if call.get_field("recording_consent") == "yes":
+        on_consent_given(call)
+        return
+
+    # first decline: give the truthful reason, warn that a second decline ends the call, and confirm
+    state = call_state(call)
+    state["task"] = "consent_reconsider"
+    call.set_task(
+        "consent_reconsider",
+        objective="The caller declined recording. Confirm whether they are sure, without pressuring them.",
+        checklist=[
+            guava.Say(compliance.CONSENT_RECONSIDER_SCRIPT),
+            guava.Field(
+                key="recording_consent_final",
+                field_type="multiple_choice",
+                choices=["agree_to_recording", "end_call"],
+                # the "are you sure?" question is the end of the Say above, so it is always spoken verbatim
+                description=(
+                    "Their answer to whether they are sure they'd prefer not to be recorded. "
+                    "If they now agree to the call being recorded, choose agree_to_recording. "
+                    "If they confirm they do not want to be recorded, choose end_call. "
+                    + compliance.CONSENT_FIELD_GUIDANCE
+                ),
+                required=True,
+            ),
+        ],
+    )
+
+
+@agent.on_task_complete("consent_reconsider")
+def on_consent_reconsider_complete(call: guava.Call):
+    if call.get_field("recording_consent_final") == "agree_to_recording":
+        on_consent_given(call)
+        return
+
+    state = call_state(call)
+    state["disposition"] = "consent_declined"
+    call.hangup(final_instructions=compliance.CONSENT_DECLINED_INSTRUCTIONS)
+
+
+def on_consent_given(call: guava.Call):
+    state = call_state(call)
+    state["flags"].add("recording_consent")
+    state["disposition"] = "opening_complete"
+    # placeholder until the triage task is built
+    call.hangup(final_instructions="Thank them, and let them know a member of the intake team will follow up shortly.")
 
 
 @agent.on_session_end
 def on_session_end(call: guava.Call, event: BotSessionEnded):
-    logger.info("Session ended (session: %s)", call.id)
+    state = CALL_STATE.pop(call.id, None) or {}
+    # opening audit record: what was disclosed and consented to (persisted to the CRM in the post-call stage)
+    logger.info(
+        "Session ended (session: %s) caller_name=%r recording_consent=%r flags=%s disposition=%s termination=%s",
+        call.id,
+        call.get_field("caller_name"),
+        call.get_field("recording_consent_final") or call.get_field("recording_consent"),
+        sorted(state.get("flags", ())),
+        state.get("disposition") or "partial_intake",
+        event.termination_reason,
+    )
 
 
+# looks like it only inits logger and attaches listen channel if it's main. Suggesting maybe that this could have been a separate agent script for a runner in main?
 if __name__ == "__main__":
     logging_utils.configure_logging()
 
