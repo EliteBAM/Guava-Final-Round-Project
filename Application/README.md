@@ -132,7 +132,7 @@ The compliance wording is a draft that a real firm's ethics counsel would need t
 | DocuSign eSignature (REST v2.1, developer sandbox) | Working | JWT login |
 | Conflict-check API, `conflicts.py` | Mock | `mock_api.py` stands in for a case-management system such as Litify or Clio |
 | Intake CRM API, `crm.py` | Mock CRM | `PUT /pncs/{callId}`, `PATCH /pncs/{callId}/documents`, `GET /documents` |
-| Question fallback, Guava `DocumentQA` | Placeholder | Still loaded with the starter project's `guava-docs.md`; a firm FAQ would replace it |
+| Caller FAQ, Guava `DocumentQA` | Working | Answers other questions from `firm-faq.md` (sample content) |
 
 **SMS.** Guava currently refuses the send with "SMS is not configured … No CarrierX messaging service ID on the use case". The number needs SMS brand and campaign (A2P 10DLC) registration first. DocuSign's own text delivery also needs approval. You can test sending with `python -m texting +1XXXXXXXXXX`.
 

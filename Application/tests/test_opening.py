@@ -161,6 +161,27 @@ class TestRecordingAnswer(unittest.TestCase):
         self.assertIn(compliance.RECORDING_ANSWER, main.agent._purpose)  # persona carries the same answer
 
 
+class TestFaq(unittest.TestCase):
+    def test_other_questions_are_answered_from_the_faq(self):
+        faq = mock.Mock()
+        faq.ask.return_value = "Usually within about a week."
+        with mock.patch.object(main, "document_qa", faq):
+            self.assertEqual("Usually within about a week.", main.on_question(MockCall(), "When will I hear back?"))
+            # recording and fee questions keep their approved answers and never reach the FAQ
+            main.on_question(MockCall(), "Why is this recorded?")
+            main.on_question(MockCall(), "What percentage do you take?")
+        faq.ask.assert_called_once_with("When will I hear back?")
+
+    def test_no_faq_means_a_caller_safe_answer(self):
+        with mock.patch.object(main, "document_qa", None):
+            self.assertEqual(compliance.FAQ_FALLBACK, main.on_question(MockCall(), "When will I hear back?"))
+
+    def test_faq_leaves_fees_to_the_approved_answer(self):
+        text = (Path(main.CURRENT_DIR) / "firm-faq.md").read_text(encoding="utf-8").lower()
+        self.assertNotIn("percent", text.split("## ", 1)[1])  # header notes aside, no fee terms in the answers
+        self.assertNotIn("%", text)
+
+
 @unittest.skipUnless(LIVE, "set GUAVA_LIVE_TESTS=1 to run live scenarios")
 class TestOpeningScenarios(unittest.TestCase):
     """LLM-played callers against the real dialog system (text only: no ASR/TTS, no caller ID)."""

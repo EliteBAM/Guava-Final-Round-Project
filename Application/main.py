@@ -29,15 +29,15 @@ logger = logging.getLogger("guava.intro_agent")
 CURRENT_DIR = Path(__file__).resolve().parent
 RECORDS_DIR = CURRENT_DIR / "intake_records"
 
-# begin by loading RAG documents from project directory and save it in a DocumentQA Guava Object.
+# begin by loading the firm's caller FAQ for RAG and save it in a DocumentQA Guava Object.
 # explicit utf-8: Windows defaults to cp1252 and fails to decode the docs
 try:
-    with open(CURRENT_DIR / "guava-docs.md", "r", encoding="utf-8") as f:
-        document_qa = DocumentQA(documents=f.read(), namespace="guava-cli-intro")
+    with open(CURRENT_DIR / "firm-faq.md", "r", encoding="utf-8") as f:
+        document_qa = DocumentQA(documents=f.read(), namespace="firm-faq", instructions=compliance.FAQ_INSTRUCTIONS)
 
 except Exception as exc:
     document_qa = None
-    logger.warning("Could not load Guava docs for RAG: %s", exc)
+    logger.warning("Could not load the firm FAQ for RAG: %s", exc)
 
 # after rag passed or failed, create an agent instance
 agent = guava.Agent(
@@ -130,16 +130,11 @@ def on_question(call: guava.Call, question: str) -> str:
         call_state(call)["flags"].add("fee_questions")
         return compliance.FEE_ANSWER
 
-    if document_qa is not None:
-        answer = document_qa.ask(question)
-    else:
-        answer = (
-            "Unfortunately, I'm not able to answer that question right now, "
-            "because my knowledge base didn't load. To fix that, I recommend "
-            "verifying your network connection, then relaunching me."
-        )
-    logger.info("Answering...")
-    return answer
+    # everything else is answered from the firm FAQ (firm-faq.md)
+    if document_qa is None:
+        return compliance.FAQ_FALLBACK
+    logger.info("Answering from the FAQ...")
+    return document_qa.ask(question)
 
 
 @agent.on_task_complete("introduction")

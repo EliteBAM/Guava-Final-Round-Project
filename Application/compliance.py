@@ -112,7 +112,17 @@ FEE_ANSWER = (
     "with you before you sign anything."
 )
 
-FEE_QUESTION_WORDS = ("fee", "percent", "cost", "charge", "pay you", "should i sign", "contract", "agreement")
+# how the FAQ lookup (Guava DocumentQA over firm-faq.md) may answer: the FAQ only, nothing advisory (Op. 88-6)
+FAQ_INSTRUCTIONS = (
+    "You answer questions from people calling a law firm's intake line. Answer in one or two short, warm sentences, "
+    "using only the FAQ. If the FAQ doesn't cover the question, say you're not sure and that the team will follow up. "
+    "Never give legal or medical advice, and never give an opinion on fault, case strength, or case value."
+)
+
+# when the FAQ can't be reached: something a caller can hear, never a technical error
+FAQ_FALLBACK = "I'm not sure about that one, but I'll make sure the team follows up with you on it."
+
+FEE_QUESTION_WORDS =("fee", "percent", "cost", "charge", "pay you", "should i sign", "contract", "agreement")
 
 # phrases that must appear in the agent's actual speech for the disclosures to count as delivered
 REQUIRED_PHRASES = ("not a lawyer", "employee", "legal advice", "recorded")
