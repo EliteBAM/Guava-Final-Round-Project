@@ -92,19 +92,45 @@
 
 **Critical rule:** these flags go **only** into the attorney summary and into routing. The caller never hears a calculated deadline. The declination guidance is to warn generically that time limits apply, without computing one (RF Key takeaway 11, §2.7).
 
-### Stage 6: Attorney decision
-**Goal:** a lawyer decides whether to accept. That decision cannot be delegated to AI.
-- **Domain facts:**
-  - At M&M, an **Intake Attorney** makes *real-time* acceptance decisions, reviews materials such as police reports and photos, and gives "attorney-level reassurance" before signing. (RF §1.3, §3)
-  - Opinion 24-1 says lawyers may not delegate functions requiring a lawyer's personal judgment to AI. (RF §3)
-- **Design options:**
-  - **A. Live warm transfer to an Intake Attorney.** Most faithful to M&M. Hardest to build: Guava has no transfer-failure event (SDK §1.8).
-  - **B. Countersignature as acceptance.** Florida requires the lawyer's signature on the contract anyway, so no agreement is formed until a lawyer signs. Risk: the caller believes they are "signed" before any attorney has looked at the case.
-  - **C. Attorney-desk API with a short hold (recommended for the MVP).** The agent submits the intake summary to an "intake attorney review" endpoint and holds the caller briefly. The endpoint returns `approve`, `decline`, `need_info` (with questions), or `unavailable`.
-    - In production, that endpoint is a real Intake Attorney working a queue in the firm's CRM (e.g. Litify), which matches M&M's real-time model.
-    - In the demo, it is our mock service, with failure injection.
-    - It keeps the decision with a lawyer and makes the integration meaningful: a network call whose result changes the conversation.
-- **This is the biggest open design decision. Confirm it in grilling.**
+### Stage 6: Next steps and retainer
+**Goal:** close the intake warmly and honestly. The caller leaves knowing what happens next, and that nothing is final until an attorney signs.
+
+**Decided (replaces the earlier "attorney decision" options).**
+- A live attorney decision on the call was dropped, whether by API with a hold or by warm transfer. Simulating it in a demo makes it look like the AI decides, and it doesn't fit most firms' flows.
+- **The attorney's countersignature is the acceptance.** Florida requires the lawyer's signature on a contingency agreement (Rule 4-1.5(f)), so no agreement exists until a lawyer signs.
+- This also matches practice: M&M's intake specialists, not attorneys, send and collect retainers by email or text (RF §1.1 #5).
+
+**When:** the post-story re-check finds no new conflict, and all details are collected.
+
+**Terminology:** the document is Florida's **contingency fee agreement** (Rule 4-1.5(f)), which firms and callers call the **retainer**. In speech, the agent says "fee agreement" or "retainer agreement".
+
+**The agent:**
+1. **Thanks them for the process, not the merits.** "Thank you, you've given us what the attorney needs to review your situation." Avoid lines like "things are looking good", which a caller can hear as a prediction (Rule 4-7.13(b)(1)).
+2. **Explains the next steps** (RF §3, Key takeaway 9):
+   - an attorney will review their information;
+   - if the firm takes the case, an attorney and team are typically assigned within about a week;
+   - what to gather in the meantime: photos, the police report number, medical records, insurance cards.
+3. **Explains the documents, in the required order** (Rule 4-1.5(f)(4)(C); RF §2.5):
+   - first, a **Statement of Client's Rights**, which they should read in full before anything else. It's signed by them and by a lawyer.
+   - then the **fee agreement**, which they can sign **whenever they're ready**, with no pressure.
+4. **States two facts verbatim:**
+   - "An attorney will review everything and decide whether the firm can take your case; the agreement is only final once both you and a Morgan and Morgan attorney have signed it."
+   - "It also gives you three business days after signing to cancel in writing."
+   These address RF §3 ("must say in plain terms that an attorney decides") and the mandatory cancellation clause (4-1.5(f)(4)(A)(ii)). Stating them is not interpreting them.
+5. **Offers an attorney for questions before signing.** "If you have any questions about the statement or the agreement before you sign, an attorney can go over them with you." This matches M&M, where the Intake Attorney gives "attorney-level reassurance before the retainer is signed" (RF §3).
+
+**Constraints** (RF §3, "What intake can and cannot say"):
+- No explaining or interpreting the Statement or the fee terms, and no answering "should I sign?" (Op. 88-6). Those questions go to an attorney.
+- No promise or implication that the firm has accepted the case, that it will succeed, or what it's worth (Rule 4-7.13(b)(1)).
+- No promises of financial help, such as paying medical bills or advances (Rule 4-1.8(e) allows only court costs and litigation expenses).
+- "Does this cost me anything?" is answered only from approved FAQ wording, never characterized freely.
+- **Known risk:** a caller may feel "signed up" before an attorney has reviewed the case. The verbatim line in step 4 addresses it.
+
+**Disposition at end of call:** `pending_signature` (the caller hasn't signed and the attorney hasn't countersigned). This is one of the standard intake dispositions (RF §2 implications).
+
+**Attorney's side (after the call, human):** review the intake summary and flags, then either:
+- countersign the Statement and the agreement, after which the client receives a signed copy (4-1.5(f)(2)) and the 3-business-day cancellation window runs from signing; or
+- decline with a non-engagement letter (Stage 7, RF §2.7).
 
 ### Stage 7: Outcome
 **Goal:** every call ends in a defined disposition.
@@ -121,7 +147,7 @@
 
 **Other outcomes:**
 - **Decline:** gentle wording, no opinion on the merits, a generic "time limits apply, consult another lawyer promptly", and a written **non-engagement letter** to follow. The person still goes into the conflict system (RF §2.7).
-- **Pending:** the caller wants time to sign, or attorney review is pending → schedule a callback.
+- **Pending:** the caller hasn't signed yet, or the attorney hasn't countersigned yet. This is the normal state at the end of the call, and the firm follows up after it.
 - **Referral:** wrong practice area or out of state.
 - **Routed:** non-PNC callers (Stage 2).
 
@@ -172,47 +198,45 @@ For an AI agent, documentation and data entry collapse into a single step: the c
 - Do **not** branch on `IntentRecognizer` output. It returns a list, which is the broken pattern in the starter repo's legal example (SDK §1b).
 
 ### Stage 3: Conflict screen
-- **Task `conflict_min`:** `caller_full_name`, `injured_party_name` (`required=False`), `adverse_parties` (text), `incident_date` (`field_type="date"`, returns `{year, month, day}`), and `represented` (`multiple_choice` yes/no/not_sure).
-- **`@agent.on_validate("incident_date")`:** rejects future or implausible dates, which triggers an automatic `retry_task` (SDK §1.4).
-- **Router on completion:**
-  1. Immediately `set_task("holding", …)`. This collects **procedural items only** (callback number, OK to text, how they heard of the firm), with the objective "do not ask about what happened; do not say any check has finished".
-  2. Submit `conflict_api(...)` to the pool, with an 8-second timeout.
-  3. The worker then branches:
-     - **clear** → `set_task("story", …)`
-     - **conflict** → set a `decline_conflict` task with an approved no-reason script → `hangup`
-     - **error / timeout** → `send_instruction("…do NOT say it passed…")` → `set_task("take_message")`
-- **Race:** if `holding` completes before the API returns, the router sends `send_instruction("just finishing a quick check")` and waits for the worker (P6).
-- **`represented == "yes"`** → flag it and go to the attorney escalation path.
+*(Updated to match the build.)*
+- **Task `conflict_min`:** `caller_full_name` (spell the last name), `adverse_parties` (text, `required=False`), `incident_date` (`field_type="date"`, returns `{year, month, day}`), and `represented` (`multiple_choice` yes/no/not_sure). There is no `injured_party_name`, because only callers phoning about their own injury reach this stage.
+- **`@agent.on_validate("incident_date")`:** rejects future or invalid dates, which triggers an automatic `retry_task` (SDK §1.4).
+- **On completion:**
+  - **`represented == "yes"`** → flag it and go to the attorney-escalation stub. No check runs.
+  - Otherwise the handler submits the check to the pool and returns immediately (no holding task; Part 4 #5). An unknown adverse party means the check runs on the caller's name only, with an `adverse_unknown` flag.
+  - The worker normalizes the result to clear / conflict / error and branches:
+    - **clear** → Story
+    - **conflict** → the `conflict_decline` task. It's sympathetic: an understandable reason (conflict-of-interest rules) comes before the conclusion. It never says who, then gives the generic time-limit warning and the Florida Bar referral line.
+    - **error (1st)** → the `conflict_retry_offer` task: an apology plus an offer to try once more.
+    - **error (2nd), or the caller declines the retry** → a kind ending that suggests calling back later or forthepeople.com.
 
 ### Stage 4: Fact gathering
-- **Task `story`:**
-  - one open field: `Field(key="narrative", field_type="text")`
-  - `completion_criteria="Complete when the caller has finished describing what happened; do not interrogate."`
-  - starts with a bridge line as a `Todo` (a plain string in the checklist)
-- **After `story`:**
-  - Code extracts structured facts from the narrative with `guava.helpers.llm.generate(prompt, json_schema=...)` (SDK §1.11). This runs **in the pool, not inline**.
-  - Whatever was extracted is stored as "known". `call.add_info("known_so_far", {...})` lets the model refer back to it naturally (SDK §1.6).
-  - **New-party re-check:** if the extraction finds party names not already checked, run the conflict check again for them before going on.
-- **Task `details_<incident_type>`:** built dynamically. The checklist is only `BRANCH_FIELDS[type]` minus known fields (P1). Examples: `first_treatment_date` (`date`), `police_report` (`multiple_choice`), `vehicle_role`, `other_insurer` (`required=False`).
-- **Unverified:** whether the model will fill a later field from something said earlier in the same task (SDK §7). The code-side "minus known" filter is the reliable fallback.
+*(Revised: Story and Details are one Guava task.)*
+- **One task `story`.** The checklist runs: a bridge `Todo` inviting the caller's account, then the open `narrative` field, then a bridge `Todo` ("thank them, acknowledge their injuries, say you have a few quick questions"), then the detail fields.
+- **Why one task:** the model does fill later fields from information the caller volunteers. This was observed in the opening (early recording consent) and in triage ("I hurt my neck" filled `on_behalf_of`). So whatever the story already covered fills itself, and only the gaps get asked. There is no code-side extraction step and no task transition (no "one moment…" filler) in the middle of the most emotional part of the call.
+- **Incident-specific fields** use a `not_applicable` choice ("if this isn't a vehicle accident, choose not_applicable without asking"), the same trick `on_behalf_of` uses, because Guava has no conditional fields.
+- **Corrections** ("actually it was Tuesday") happen inside the task. They are not a graph edge.
+- **New parties** named in the story go in an optional `other_parties` field, which the `qualify` diamond re-checks.
+- **Risk to watch:** the model may start asking detail questions before the caller has finished their story. The narrative field's guidance tells it to let them finish.
 
 ### Stage 5: Qualification
-- **Pure Python. No model, no task.** It runs in the router after the details task.
+- **Pure Python. No model, no task.** It is the `qualify` diamond, which runs after the `story` task. It first re-checks conflicts for any newly named parties (Part 3, re-check failure policy).
   - `limitation_flags(incident_date, incident_type, today)`
   - `pip_flag(incident_date, first_treatment_date)`
   - rule tables for `route_nurse_intake`, `government_defendant`, `out_of_state`
 - The results go into `state["flags"]` and the attorney summary. **Nothing is spoken.**
-- **Hard routes:**
-  - medical malpractice / nursing home → nurse-intake message path
-  - `sol_expired_likely` or `sol_boundary_case` → still goes to attorney review, marked urgent. **Never** an auto-decline: the decision is the attorney's.
+- **No hard routes in the MVP.** Every flag, including `route_nurse_intake` for medical malpractice / nursing home and `sol_expired_likely` / `sol_boundary_case` (marked urgent), goes to the attorney, who decides after the call. Nothing auto-declines.
 
-### Stage 6: Attorney decision (Option C)
-- The router calls `set_task("attorney_hold", objective="Let them know an attorney is reviewing their information now; reassure; answer only logistics questions.", checklist=[...])`.
-- The pool worker POSTs the summary to `/intake-review` (mock), with a 20–30 s budget. Then:
-  - `approve` → `set_task("signup")`
-  - `decline` → `set_task("decline")`
-  - `need_info` → `set_task("followup_questions", checklist=[Field(...) for q in questions])`, then resubmit. **Capped at 1 loop.**
-  - `unavailable` / `timeout` → `set_task("schedule_callback")`. Never imply approval.
+### Stage 6: Next steps and retainer
+- **Task `next_steps`**, set by the `qualify` diamond when the re-check finds no new conflict. The checklist follows Part 1 Stage 6:
+  1. Bridge `Todo`: process-only thanks ("you've given us what the attorney needs to review your situation"). No merit-sounding phrases.
+  2. Next-steps `Todo`s: an attorney reviews their information; if the firm takes the case, an attorney and team are typically assigned within about a week; what to gather (photos, police report number, medical records, insurance cards).
+  3. Documents `Todo`: first a Statement of Client's Rights to read in full, then the fee agreement to sign whenever they're ready, with no pressure.
+  4. `Say` (verbatim): "An attorney will review everything and decide whether the firm can take your case; the agreement is only final once both you and a Morgan and Morgan attorney have signed it. It also gives you three business days after signing to cancel in writing." Code phrase-checks it (e.g. "attorney", "decide", "final", "three business days") with the same pattern as the disclosures.
+  5. `Todo`: offer an attorney for any questions about the statement or agreement before signing.
+- Fee or agreement questions, and "should I sign?", get the approved deflection ("an attorney can go over any questions about the agreement with you"). The call is flagged `fee_questions`.
+- **Disposition** `pending_signature` is set when the task is set, not on completion, so it holds even if the call ends early (the lesson from the conflict retry offer).
+- How the documents are delivered (texted during the call vs emailed after) is decided in Stage 7.
 
 ### Stage 7: Outcome
 - **`signup`:**
@@ -224,9 +248,7 @@ For an AI agent, documentation and data entry collapse into a single step: the c
   - The worker polls signing status. On signed → `send_instruction` with a confirmation. On timeout → the link stays valid → `logistics`.
   - Fee questions → the approved line "an attorney will go over any questions about the agreement" → flag `fee_questions`.
   - **Prerequisite:** SMS needs A2P 10DLC registration (SDK §1.10). Have an email fallback ready.
-- **`decline`:** approved wording, plus the generic time-limit warning (RF §2.7), plus "you'll receive a letter confirming this" → `hangup`.
-- **`logistics`:** a `Todo` checklist (what to gather, next steps), plus `Field(key="best_callback_time")`. Then wrap with `hangup(final_instructions="thank them, remind them of next steps")`.
-- **`take_message` / `schedule_callback`:** name, number, reason, best time.
+- *(Revisit when Stage 7 is designed. The `signup` / `esign_wait` mechanics above predate the Stage 6 rewrite. Declines now happen after the call, by the attorney, with a non-engagement letter, and the logistics content has moved into `next_steps`.)*
 
 ### Stage 8: Post-call
 - **`@agent.on_session_end`:**
@@ -244,8 +266,17 @@ For an AI agent, documentation and data entry collapse into a single step: the c
 
 ## Part 3: State-transition graph
 
+### Graph conventions
+1. **A state is one Guava task**: something the caller is in a conversation with. States are named after what the caller experiences.
+2. **A diamond (`<<choice>>`) is a code decision**: API calls and rule evaluation. It is never spoken, and from the caller's side it is instant.
+3. **An edge exists only where code calls `set_task` or `hangup`.** Anything the model does *within* a task (asking for a missing fact, accepting a correction, a follow-up question) is not an edge.
+4. **Every edge condition is a typed field value or a code result**, never the model's free-text judgement.
+
 ```mermaid
 stateDiagram-v2
+    state conflict_check <<choice>>
+    state qualify <<choice>>
+
     [*] --> Opening
     Opening --> Triage
     Triage --> ConflictScreen: new injury matter, own behalf
@@ -253,41 +284,42 @@ stateDiagram-v2
     Triage --> Referral: other legal matter
     Triage --> RouteMessage: calling for someone else
     Triage --> Wrap: spam / other
-    ConflictScreen --> Holding: names + date collected (async check starts)
-    Holding --> Story: check CLEAR
-    Holding --> DeclineConflict: CONFLICT (no reason given)
-    Holding --> RouteMessage: check ERROR / TIMEOUT
+
     ConflictScreen --> AttorneyEscalation: already represented
-    Story --> Details: narrative done
-    Details --> Story: caller adds or corrects the story
-    Story --> RecheckConflict: new party named
-    Details --> RecheckConflict: new party named
-    RecheckConflict --> Details: clear
-    RecheckConflict --> DeclineConflict: conflict
-    Details --> Qualify: required facts known
-    Qualify --> Details: missing qualifying fact
-    Qualify --> NurseIntake: med-mal / nursing home
-    Qualify --> AttorneyHold: flags computed
-    AttorneyHold --> SignUp: approve
-    AttorneyHold --> Decline: decline
-    AttorneyHold --> FollowUpQs: need_info
-    FollowUpQs --> AttorneyHold: answered (max 1 loop)
-    AttorneyHold --> ScheduleCallback: unavailable / timeout
-    SignUp --> EsignWait: link texted
-    EsignWait --> Logistics: signed / will sign later
-    SignUp --> ScheduleCallback: text failed + no email
-    Decline --> Wrap
+    ConflictScreen --> conflict_check: names + date collected
+    conflict_check --> Story: clear
+    conflict_check --> DeclineConflict: conflict (no specifics given)
+    conflict_check --> ConflictRetryOffer: error (1st attempt)
+    conflict_check --> Wrap: error (2nd attempt)
+    ConflictRetryOffer --> conflict_check: caller wants a retry
+    ConflictRetryOffer --> Wrap: caller declines retry
+
+    Story --> qualify: story + details collected
+    qualify --> DeclineConflict: new party named, re-check finds a conflict
+    qualify --> NextSteps: no new conflict (flags attached for the attorney)
+
+    NextSteps --> Wrap: retainer explained (final only once caller and attorney sign)
     Referral --> Wrap
     RouteMessage --> Wrap
     DeclineConflict --> Wrap
-    NurseIntake --> Wrap
     AttorneyEscalation --> Wrap
-    ScheduleCallback --> Wrap
-    Logistics --> Wrap
     Wrap --> [*]
     Wrap --> PostCall: session end
     PostCall --> [*]
 ```
+
+**The `qualify` diamond**, in order:
+1. Re-check any parties the story named that weren't checked before.
+2. Compute the flags: deadline, PIP 14-day, government defendant, out of state, no treatment, and `route_nurse_intake` for medical malpractice / nursing home.
+3. Route to DeclineConflict or NextSteps. Those are the only two exits: intake never declines on the merits.
+
+Nothing in it is spoken.
+
+**Main path:** Opening → Triage → ConflictScreen → Story → NextSteps → Wrap. Everything else is a side exit. The attorney's decision (countersign, or decline with a non-engagement letter) happens after the call, by a human.
+
+**Re-check failure policy.** The first conflict check gates *what we hear*, so if it fails, intake stops. The re-check runs *after* the story has been heard, so blocking would protect nothing and would only lose the lead. A failed re-check therefore becomes a `recheck_failed` flag that the attorney sees before deciding. A re-check that finds a **conflict** still declines, with the same sympathetic decline as the first check.
+
+**Still to restate under the conventions:** in the MVP, `RouteMessage` and `Referral` are currently placeholder hang-ups, not tasks.
 
 ### Global interrupts
 These can happen from any state, so they are modeled as overlays rather than edges:
@@ -295,7 +327,7 @@ These can happen from any state, so they are modeled as overlays rather than edg
 | Interrupt | Detection | Effect | Resumes? |
 |---|---|---|---|
 | **Emergency** ("not breathing", "chest pain"…) | Code: keyword pass in `on_caller_speech` (P4) | Verbatim 911 line (`read_script`, ASSUMED to work mid-call), then a safety check | Only if the caller confirms they're safe; otherwise `Wrap` |
-| **Asks for a human** | `on_escalate` (requested_by=`human`) | Business hours: transfer to the intake team. Otherwise: `ScheduleCallback` | No |
+| **Asks for a human** | `on_escalate` (requested_by=`human`) | MVP: a placeholder hang-up ("a member of the intake team will call you back"). Later: transfer to the intake team during business hours | No |
 | **Agent gives up** | `on_escalate` (requested_by=`agent`) | Same as above. Override the default "apologize and hang up" (SDK §1.5) | No |
 | **Distress / grief** | Code: keyword plus interruption counter (P2) | Switches **mode**, not state: slower persona, acknowledge-first wording, fewer required fields, offer a callback | Yes, same state |
 | **Legal-advice or case-value question** | Model calls `on_question`, or a `send_instruction` guard | Approved deflection ("an attorney can speak to that") | Yes, same state |
@@ -320,18 +352,17 @@ Every task factory filters its checklist by `call.get_field(k) is None` *and* by
 **4. Overlay detours vs. real departures.**
 Brief detours (an FAQ, a moment of empathy, an advice deflection) use `send_instruction` and **do not replace the task**, so the conversation picks back up where it was. Real departures (emergency, escalation) use `set_task`. For departures that can resume, the router keeps a **resume record** (state id plus remaining fields) and re-issues the task afterwards with only the remaining fields: "Thanks for bearing with me. Where were we: you said the other driver…"
 
-**5. Holding states do useful work.**
-Never leave dead air while an API runs. The `holding` and `attorney_hold` tasks collect procedural, non-substantive items (callback number, text consent, referral source), so the wait is productive. Their objectives forbid implying any result. The router handles the race where the caller finishes before the result arrives (P6).
+**5. Holding states do useful work (deferred).**
+Never leave dead air while an API runs. A holding task would collect procedural, non-substantive items (callback number, text consent, referral source) while a slow API runs, with an objective that forbids implying any result. **Not in the MVP:** the conflict check runs on a background thread with a short timeout, and the model's own transition filler covers the wait. Revisit if a real API is slow enough to cause dead air, which brings back the race where the caller finishes before the result arrives (P6).
 
 **6. Transitions are guarded by predicates.**
-Code refuses to enter `Story` until `conflict == "clear"`, and refuses to enter `SignUp` until the attorney desk returns `approve`. These guards are the review's code-vs-model talking point: they **cannot** be talked past, because no prompt grants the transition.
+Code refuses to enter `Story` until `conflict == "clear"`, and refuses to enter `NextSteps` (the retainer) until the post-story re-check finds no conflict. These guards are the review's code-vs-model talking point: they **cannot** be talked past, because no prompt grants the transition.
 
 **7. Loop limits on every back-edge.**
 Per-state visit counters and per-field retry counters live in state:
-- `Details ↔ Story`: at most 2 round trips.
-- `FollowUpQs → AttorneyHold`: at most 1.
+- `ConflictRetryOffer → conflict_check`: at most 1 retry.
 - `on_validate`: on the 3rd failure, accept the value with `needs_review` (or offer keypad entry for digits) (P11).
-- When a limit is hit, go to `ScheduleCallback`, never round again.
+- When a limit is hit, end kindly (`Wrap`), never round again.
 
 **8. Mode flags change *how* every later task is phrased, not *which* task comes next.**
 `distress`, `grief` and `rushed` are flags that task factories read: slower `set_persona(speech_speed=...)`, acknowledgement-first `Todo`s, more fields set `required=False`, and a callback offered. The graph stays the same while the call feels different.
@@ -349,7 +380,6 @@ Declines, conflict declines, referrals and fee-question deflections are firm-app
 | Endpoint | Real-world analogue | Failure modes to demo |
 |---|---|---|
 | `POST /conflicts/check` | Firm conflict system (Litify / Clio contacts) | conflict hit, timeout, malformed JSON |
-| `POST /intake-review` | Intake Attorney queue in the CRM | approve / decline / need_info / unavailable, slow response |
 | `POST /esign/envelopes` + `GET /esign/{id}` | DocuSign / Dropbox Sign | create fails, never signed |
 | `POST /leads` | Litify / Salesforce lead + disposition | 5xx on write (retry idempotently on `call.id`) |
 
@@ -362,11 +392,10 @@ One mock server with a failure-injection switch (query flag or env) lets the ons
 **In the MVP:**
 - Opening with the three disclosures (English)
 - Triage, with every non-PNC type routed to a message
-- Conflict screen, async check and holding task
+- Conflict screen, async check and retry offer (holding task deferred)
 - Story plus dynamic details for **motor vehicle accidents** (the highest-volume case type)
-- Qualification flags in code: deadline, PIP 14-day, represented, nurse routing
-- Attorney desk (Option C) with all four results
-- Sign-up by text (or email fallback); decline; schedule callback; logistics
+- Qualification flags in code: deadline, PIP 14-day, represented, nurse-routing flag
+- Next steps and retainer: the agent explains next steps and the retainer (final only once caller and attorney sign); delivery mechanism per Stage 7
 - Post-call record, summary memo, disposition, and non-engagement letter rendered from state
 - Interrupts: emergency, human request, legal-advice / case-value deflection, FAQ
 - The mock service with failure injection
@@ -378,7 +407,8 @@ One mock server with a failure-injection switch (query flag or env) lets the ons
 |---|---|
 | Spanish | High value in Florida. Needs keypad language selection plus Spanish disclosure scripts (P7). First item for the next 8 hours. |
 | Slip-and-fall, premises, wrongful-death branches | The branch mechanism is identical. Adding a case type is a data change, not new code. Wrongful death needs grief-specific design. |
-| Live warm transfer to an attorney (Option A) | No transfer-failure event in the SDK. Option C covers the decision honestly. |
+| Real-time attorney decision on the call (warm transfer or attorney-desk API) | No transfer-failure event in the SDK, and a simulated attorney decision looks like the AI deciding. The attorney's countersignature after the call is the acceptance instead. |
+| Nurse-intake routing for medical malpractice / nursing home | M&M routes these to RN screeners (RF §1.1 #7). Out of the car-accident MVP scope, so it is kept as a flag for the attorney. |
 | Silence watchdog | The Dialog System's own silence behavior is unknown. Measure it before building on top (SDK §7). |
 | Unsigned-lead follow-up campaigns | Outbound requires separate registration. Inbound-only also keeps solicitation-rule risk at zero (RF §4.5). |
 | Real Clio / Litify integration | Access requirements are unclear. A Clio-shaped mock shows the integration pattern. |
@@ -387,7 +417,7 @@ One mock server with a failure-injection switch (query flag or env) lets the ons
 ---
 
 ## Open decisions (for `/grill-with-docs`)
-1. **The attorney-decision mechanism.** Option C recommended. Is the hold acceptable to the caller, and what is the time budget?
+1. ~~**The attorney-decision mechanism.**~~ Decided: the attorney's countersignature after the call is the acceptance (Stage 6).
 2. **The exact minimal conflict data set.** Is asking for adverse-party names before the story acceptable to callers?
 3. **Is SMS feasible?** Check the account's A2P 10DLC status. If not, use email or the mock as the primary channel.
 4. **The deadline boundary:** whether to flag incidents within ±1 day of 2023-03-24 as `sol_boundary_case` for attorney review.

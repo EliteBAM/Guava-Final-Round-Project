@@ -65,6 +65,55 @@ CONFIDENTIALITY_SCRIPT = (
     "but I'll have the right team reach out to you."
 )
 
+# read verbatim when the conflict check can't be reached the first time; the caller chooses whether to retry
+CONFLICT_ERROR_SCRIPT = (
+    "I'm so sorry, but I'm having trouble accessing our conflict-of-interest records right now. "
+    "I can try the lookup one more time, but if it doesn't go through, unfortunately I won't be able to "
+    "finish your consultation today. Would you like me to try again?"
+)
+
+# final instructions when the check can't be completed (caller declined the retry, or the retry failed too)
+CONFLICT_FAILED_INSTRUCTIONS = (
+    "Apologize sincerely that you weren't able to complete the check today, and explain that you'll need to end "
+    "the call here. Let them know they're welcome to call back a little later, or reach Morgan and Morgan through "
+    "the contact form at forthepeople.com. Thank them for their patience and wish them well in their recovery."
+)
+
+# read verbatim when the check finds a conflict (Rule 4-1.6): explain the kind of reason first, never who or what
+# it involves; then the generic time-limit warning without computing any deadline, and a referral
+CONFLICT_DECLINE_SCRIPT = (
+    "Lawyers have strict rules about conflicts of interest. When the firm already has a connection to someone "
+    "involved in a matter, we aren't allowed to take it on, and I'm not able to share the details of that "
+    "connection. Because of that, I'm truly sorry, but Morgan and Morgan won't be able to represent you in this "
+    "matter. Please don't let that stop you from getting help: there are time limits on injury claims, so I'd "
+    "encourage you to speak with another attorney soon. The Florida Bar's Lawyer Referral Service can help you "
+    "find one at 800-342-8011."
+)
+
+# final instructions when the caller already has a lawyer for this matter (Rule 4-4.2: an attorney decides)
+REPRESENTED_INSTRUCTIONS = (
+    "Thank them for letting you know. Explain that since they already have a lawyer for this matter, one of the "
+    "firm's attorneys will need to speak with them directly, and that an attorney will reach out to them. "
+    "Don't ask any more questions about the case, then say goodbye warmly."
+)
+
+# read verbatim at next steps: an attorney decides (RF 3), the agreement is final only once both sign
+# (Rule 4-1.5(f)(2)), and the mandatory 3-business-day cancellation right (4-1.5(f)(4)(A)(ii)), stated, not interpreted
+NEXT_STEPS_SCRIPT = (
+    "An attorney will review everything and decide whether the firm can take your case; the agreement is only "
+    "final once both you and a Morgan and Morgan attorney have signed it. It also gives you three business days "
+    "after signing to cancel in writing."
+)
+NEXT_STEPS_PHRASES = ("decide", "final", "three business days")
+
+# approved answer to any question about fees or whether to sign (Op. 88-6: intake never interprets the agreement)
+FEE_ANSWER = (
+    "That's a great question for an attorney. An attorney can go over the agreement and any questions about fees "
+    "with you before you sign anything."
+)
+
+FEE_QUESTION_WORDS = ("fee", "percent", "cost", "charge", "pay you", "should i sign", "contract", "agreement")
+
 # phrases that must appear in the agent's actual speech for the disclosures to count as delivered
 REQUIRED_PHRASES = ("not a lawyer", "employee", "legal advice", "recorded")
 
@@ -78,7 +127,16 @@ def is_recording_question(question: str) -> bool:
     return "record" in question.lower()
 
 
-def missing_disclosure_phrases(spoken: str) -> list[str]:
-    """Return the REQUIRED_PHRASES that do not appear in what the agent said."""
+def is_fee_question(question: str) -> bool:
+    lowered = question.lower()
+    return any(word in lowered for word in FEE_QUESTION_WORDS)
+
+
+def missing_phrases(spoken: str, required: tuple[str, ...]) -> list[str]:
+    """Return the required phrases that do not appear in what the agent said."""
     normalized = _normalize(spoken)
-    return [phrase for phrase in REQUIRED_PHRASES if phrase not in normalized]
+    return [phrase for phrase in required if phrase not in normalized]
+
+
+def missing_disclosure_phrases(spoken: str) -> list[str]:
+    return missing_phrases(spoken, REQUIRED_PHRASES)
