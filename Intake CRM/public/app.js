@@ -552,6 +552,31 @@ function factCard(title, section) {
   );
 }
 
+// The signing packet's status, set by the main app (PATCH /pncs/{callId}/documents).
+const DOCUMENT_STATUS = {
+  sent: 'Waiting for the client to sign',
+  client_signed: 'Signed by the client. Attorney countersignature requested by email.',
+};
+
+function documentsCard(docs) {
+  if (!docs) return emptyCard('Signing packet', 'Not sent yet');
+  const when = (iso) => (iso ? dateTime.format(new Date(iso)) : null);
+  const sentTo = docs.sentVia === 'email' ? `By email to ${docs.sentTo}` : `By text to •••• ${docs.sentTo}`;
+  const rows = [
+    ['Status', DOCUMENT_STATUS[docs.status] ?? displayValue(docs.status)],
+    ['Sent', docs.sentTo ? `${sentTo}${docs.sentAt ? `, ${when(docs.sentAt)}` : ''}` : when(docs.sentAt)],
+    ['Client signed', when(docs.signedAt)],
+    ['Documents', docs.items?.length ? docs.items.join(', ') : null],
+    ['Envelope', docs.envelopeId || null],
+  ].filter(([, value]) => value);
+  return el('div', { class: 'record-card' },
+    el('h4', { text: 'Signing packet' }),
+    el('dl', { class: 'record-facts' },
+      ...rows.map(([label, value]) => el('div', {}, el('dt', { text: label }), el('dd', { text: value }))),
+    ),
+  );
+}
+
 function recordSection(id, title, ...children) {
   return el('section', { class: 'pnc-section', 'aria-labelledby': `${id}-h` }, el('h3', { id: `${id}-h`, text: title }), ...children);
 }
@@ -625,8 +650,7 @@ function renderDetail() {
     el('div', { class: 'record-grid' }, ...RECORD_SECTIONS.map(([key, title]) => factCard(title, record?.[key]))),
   );
 
-  // filled in once the signing packet is sent (the DocuSign step)
-  const documents = recordSection('documents', 'Documents', emptyCard('Signing packet', 'Not sent yet'));
+  const documents = recordSection('documents', 'Documents', documentsCard(pnc.documents));
 
   swapDetail(el('article', {}, header, summary, flagsSection(record), intake, missingSection(record), documents));
 }

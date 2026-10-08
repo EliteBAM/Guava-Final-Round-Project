@@ -10,7 +10,8 @@ const SCHEMA = `
     created_at TEXT NOT NULL,
     call_id    TEXT,
     record     TEXT,
-    updated_at TEXT
+    updated_at TEXT,
+    documents  TEXT
   );
   CREATE TABLE IF NOT EXISTS documents (
     id         TEXT PRIMARY KEY,
@@ -24,7 +25,7 @@ const SCHEMA = `
 
 // Columns added after the first release. Databases created before them get the columns on open.
 const ADDED_COLUMNS = {
-  pncs: { call_id: 'TEXT', record: 'TEXT', updated_at: 'TEXT' },
+  pncs: { call_id: 'TEXT', record: 'TEXT', updated_at: 'TEXT', documents: 'TEXT' },
   documents: { kind: 'TEXT' },
 };
 
@@ -61,6 +62,7 @@ const toPnc = (row) => row && {
   updatedAt: row.updated_at ?? row.created_at,
   callId: row.call_id ?? null,
   record: parseRecord(row.record),
+  documents: parseRecord(row.documents),
 };
 
 const toDocument = (row) => row && {
@@ -87,6 +89,7 @@ export function openDatabase(file) {
       'INSERT INTO pncs (id, name, summary, source, created_at, call_id, record, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     ),
     updatePnc: db.prepare('UPDATE pncs SET name = ?, summary = ?, record = ?, updated_at = ? WHERE id = ?'),
+    setPncDocuments: db.prepare('UPDATE pncs SET documents = ?, updated_at = ? WHERE id = ?'),
     listDocs: db.prepare('SELECT * FROM documents ORDER BY created_at DESC, rowid DESC'),
     getDoc: db.prepare('SELECT * FROM documents WHERE id = ?'),
     getDocByKind: db.prepare('SELECT * FROM documents WHERE kind = ?'),
@@ -116,6 +119,15 @@ export function openDatabase(file) {
       const id = randomUUID();
       q.insertPnc.run(id, name, summary, 'api', now, callId, json, now);
       return { pnc: toPnc(q.getPnc.get(id)), created: true };
+    },
+    // Merge into the PNC's signing-packet status (kept apart from the record, which each PUT replaces).
+    // Returns the PNC, or null if there's none for that call.
+    mergePncDocuments(callId, changes) {
+      const existing = q.getPncByCall.get(callId);
+      if (!existing) return null;
+      const documents = { ...(parseRecord(existing.documents) || {}), ...changes };
+      q.setPncDocuments.run(JSON.stringify(documents), new Date().toISOString(), existing.id);
+      return toPnc(q.getPnc.get(existing.id));
     },
 
     listDocuments: () => q.listDocs.all().map(toDocument),

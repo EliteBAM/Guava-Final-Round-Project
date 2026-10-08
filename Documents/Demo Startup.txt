@@ -1,0 +1,8 @@
+Demo startup (one terminal each)
+
+1. cd "Intake CRM"  &&  npm start
+2. cd Application  &&  conda activate guava-sdk  &&  python mock_api.py
+3. ngrok http 3001 --url=silt-undertook-widget.ngrok-free.dev
+4. cd Application  &&  conda activate guava-sdk  &&  python -m main
+
+CRM: http://127.0.0.1:3000

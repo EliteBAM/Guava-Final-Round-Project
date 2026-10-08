@@ -18,9 +18,11 @@ from test_opening import LIVE, instructions_sent, main  # noqa: E402  (shares th
 import compliance  # noqa: E402
 import conflicts  # noqa: E402
 import crm  # noqa: E402
+import esign  # noqa: E402
 import intake  # noqa: E402
 import mock_api  # noqa: E402
 import qualification  # noqa: E402
+import signing_server  # noqa: E402
 from guava.commands import SetTaskCommand  # noqa: E402
 from guava.events import AgentSpeechEvent  # noqa: E402
 from guava.testing import MockCall  # noqa: E402
@@ -133,10 +135,13 @@ class TestStoryHandlers(unittest.TestCase):
         checker.assert_not_called()
         self.assertEqual("next_steps", self.last_task().task_id)
 
-    def test_next_steps_reads_the_verbatim_line(self):
+    def test_closing_tasks_read_the_verbatim_line(self):
         self.complete_story()
-        statements = [getattr(item, "statement", None) for item in self.last_task().action_items]
-        self.assertIn(compliance.NEXT_STEPS_SCRIPT, statements)
+        main.start_documents_sent(self.call, "ana@example.com")
+        main.start_documents_follow_up(self.call)
+        for task in [c for c in self.call._command_queue if isinstance(c, SetTaskCommand)][-2:]:
+            statements = [getattr(item, "statement", None) for item in task.action_items]
+            self.assertIn(compliance.NEXT_STEPS_SCRIPT, statements, task.task_id)
 
     def test_new_party_is_rechecked(self):
         checker = self.complete_story(other_parties="his employer, Coastal Freight Lines")
@@ -161,14 +166,16 @@ class TestStoryHandlers(unittest.TestCase):
 
     def test_next_steps_audit(self):
         self.complete_story()
+        main.start_documents_follow_up(self.call)
         main.on_agent_speech(self.call, AgentSpeechEvent(utterance=compliance.NEXT_STEPS_SCRIPT))
-        main.on_next_steps_complete(self.call)
+        main.on_closing_complete(self.call)
         self.assertNotIn("next_steps_unverified", self.state()["flags"])
 
     def test_next_steps_audit_flags_missing_line(self):
         self.complete_story()
+        main.start_documents_sent(self.call, "ana@example.com")
         main.on_agent_speech(self.call, AgentSpeechEvent(utterance="We'll be in touch soon."))
-        main.on_next_steps_complete(self.call)
+        main.on_closing_complete(self.call)
         self.assertIn("next_steps_unverified", self.state()["flags"])
 
     def test_first_treatment_date_validation(self):
@@ -223,6 +230,58 @@ class TestStoryHandlers(unittest.TestCase):
         self.call.set_field("caller_type", "insurance_or_attorney")
         _, upsert = self.write_record()
         upsert.assert_not_called()
+
+    # ---- emailing the signing packet
+
+    TEMPLATES = [("Statement of Client’s Rights", b"%PDF-1"), ("Contingency Fee Agreement", b"%PDF-2"),
+                 ("HIPAA Authorization", b"%PDF-3")]
+
+    def send(self, email="Ana@Example.com", templates=TEMPLATES, envelope="env-1",
+             link="https://signing.test/sign/env-1/sig", sent=True) -> dict:
+        """Completes next_steps with every outside service patched; returns the mocks."""
+        self.complete_story()
+        self.call.set_field("documents_email", email)
+        with mock.patch.object(crm, "upsert_pnc", return_value="ok") as upsert,                 mock.patch.object(crm, "fetch_templates", return_value=templates) as fetch,                 mock.patch.object(crm, "update_documents", return_value="ok") as update,                 mock.patch.object(esign, "create_envelope", return_value=envelope) as create,                 mock.patch.object(signing_server, "link_for", return_value=link),                 mock.patch.object(esign, "send_envelope", return_value=sent) as send:
+            main.on_next_steps_complete(self.call)
+        return {"upsert": upsert, "fetch": fetch, "update": update, "create": create, "send": send}
+
+    def field_keys(self) -> list[str]:
+        return [item.key for item in self.last_task().action_items if getattr(item, "item_type", "") == "field"]
+
+    def test_next_steps_asks_for_an_email(self):
+        self.complete_story()
+        self.assertEqual(["documents_email"], self.field_keys())
+
+    def test_an_email_sends_the_signing_packet(self):
+        mocks = self.send()
+        self.assertEqual("documents_sent", self.last_task().task_id)
+        mocks["upsert"].assert_called_once()  # the PNC exists before its documents status is set
+        mocks["fetch"].assert_called_once_with(main.SIGNING_PACKET)
+        mocks["create"].assert_called_once_with(self.call.id, "Ana Lopez", "ana@example.com", date(2026, 9, 30),
+                                                self.TEMPLATES)
+        mocks["send"].assert_called_once_with("env-1", "https://signing.test/sign/env-1/sig")
+        documents = self.state()["documents"]
+        self.assertEqual(("sent", "env-1", "email", "ana@example.com"),
+                         (documents["status"], documents["envelopeId"], documents["sentVia"], documents["sentTo"]))
+        mocks["update"].assert_called_once_with(self.call.id, documents)
+        self.assertNotIn("documents_not_sent", self.state()["flags"])
+
+    def test_no_usable_email_means_the_team_sends_them(self):
+        for email in ("none", "ana at gmail", None):
+            self.state()["flags"].discard("documents_not_sent")
+            mocks = self.send(email=email)
+            mocks["create"].assert_not_called()
+            mocks["send"].assert_not_called()
+            self.assertEqual("documents_follow_up", self.last_task().task_id, email)
+            self.assertIn("documents_not_sent", self.state()["flags"], email)
+
+    def test_any_failed_step_means_the_team_sends_them(self):
+        for failure in ({"templates": None}, {"envelope": None}, {"link": None}, {"sent": False}):
+            self.state()["flags"].discard("documents_not_sent")
+            self.send(**failure)
+            self.assertEqual("documents_follow_up", self.last_task().task_id, failure)
+            self.assertIn("documents_not_sent", self.state()["flags"], failure)
+            self.assertNotIn("documents", self.state(), failure)
 
     def test_fee_questions_are_deflected_and_flagged(self):
         for question in ("What percentage do you take?", "Should I sign it?", "Does this cost anything?"):

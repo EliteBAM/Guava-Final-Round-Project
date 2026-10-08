@@ -220,6 +220,8 @@ def build_record(fields: dict, state: dict, call_id: str, created_at: datetime) 
         },
         **sections,
         "flags": sorted(state.get("flags", ())),
+        # the signing packet as sent on the call (main.send_documents); None when it wasn't sent
+        "documents": state.get("documents"),
         "completeness": completeness(fields, specs),
         "deferred_to_questionnaire": list(DEFERRED),
     }

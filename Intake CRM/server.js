@@ -211,6 +211,16 @@ async function handleApi(req, res, parts) {
     return sendJson(res, 201, pnc);
   }
 
+  // Merge the signing packet's status into the PNC for a call (sent, client_signed, ...).
+  if (resource === 'pncs' && id && extra === 'documents') {
+    if (req.method !== 'PATCH') throw new HttpError(405, "Use PATCH to update a PNC's documents.");
+    const changes = await readJson(req);
+    const pnc = db.mergePncDocuments(id, changes);
+    if (!pnc) throw new HttpError(404, `No PNC for call "${id}". Create it with PUT /pncs/{callId} first.`);
+    broadcast('pnc-updated', pnc);
+    return sendJson(res, 200, pnc);
+  }
+
   // Create or update by the main app's call ID, so sending the same call twice never makes a duplicate.
   if (resource === 'pncs' && id && !extra) {
     if (req.method !== 'PUT') throw new HttpError(405, 'Use PUT to create or update a PNC by call ID.');

@@ -11,7 +11,7 @@ It runs on this PC only (`127.0.0.1`).
 
 ## Scope
 
-Deliberately minimal: two tabs in the UI and four API endpoints. It does **not** have search, filtering, PNC editing, user accounts, or network deployment.
+Deliberately minimal: two tabs in the UI and five API endpoints. It does **not** have search, filtering, PNC editing, user accounts, or network deployment.
 
 ## Features
 
@@ -34,7 +34,7 @@ Deliberately minimal: two tabs in the UI and four API endpoints. It does **not**
   - **Flags for the attorney**, as chips;
   - **Intake record:** one card each for Caller, Incident, Injuries and treatment, Liability, Insurance, Parties, and Conflict check. A section with nothing in it shows a dashed *Not collected* card, as do all of them on a PNC added by hand;
   - **Missing information:** the fields the call didn't collect;
-  - **Documents:** the signing packet, *Not sent yet* until the e-signature step is built.
+  - **Documents:** the signing packet's status, set by the main app: who it was texted to and when, whether the client has signed, the documents in it, and the DocuSign envelope ID. A PNC with nothing sent shows *Not sent yet*.
 - **New PNC** adds a record by hand.
 - PNCs posted through the API slide into the list live, without a refresh. When the main app sends a call again, its PNC updates in place.
 

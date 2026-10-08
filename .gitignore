@@ -1,5 +1,7 @@
 .env
 Private Information.txt
+# private keys (DocuSign's JWT login key lives in Application/docusign_private.key)
+*.key
 __pycache__/
 # per-call intake records: callers' personal details
 Application/intake_records/

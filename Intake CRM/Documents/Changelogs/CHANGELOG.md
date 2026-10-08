@@ -2,6 +2,29 @@
 
 Changes made to the Intake CRM after its first version (0.1.0), recorded so the project can be handed back to whoever built it.
 
+## 2026-10-08 (latest): documents sent by email
+
+**Made by:** Claude Code, in the main app's repository.
+
+**Why:** the main app can't text yet, because its phone number needs carrier SMS registration. DocuSign now emails the caller the signing link instead.
+
+- **`public/app.js`:** `documentsCard()` reads a new `sentVia` field. With `email`, the *Sent* row shows "By email to {address}". Anything else keeps the "By text to •••• 1234" format.
+- **Docs:** `2-API.md` lists `sentVia`, and `sentTo` can now be an email address.
+- **No server or database change:** the documents column already stores whatever fields the main app sends.
+
+## 2026-10-08 (later): signing-packet status
+
+**Made by:** Claude Code, in the main app's repository.
+
+**Why:** the main app now texts callers a DocuSign signing link for the Statement of Client's Rights, the fee agreement and the HIPAA authorization. Intake staff need to see whether the documents went out and whether the client has signed.
+
+- **`lib/db.js`:** a new `documents` column (JSON), added to existing databases by `migrate()`. `mergePncDocuments(callId, changes)` shallow-merges into it and returns `null` when there's no PNC for the call. `toPnc` adds `documents`.
+- **`server.js`:** `PATCH /api/v1/pncs/{callId}/documents`. It returns `200` with the PNC, `404` when no PNC exists for the call, and `405` for any other method, and it broadcasts `pnc-updated`. The column is separate from `record`, so the main app's `PUT` at the end of a call never overwrites it.
+- **`public/app.js`:** `documentsCard()` replaces the static "Not sent yet" card. It shows the status, who it was texted to and when, when the client signed, the document names and the envelope ID. With no status, the dashed "Not sent yet" card is still shown.
+- **Docs:** `2-API.md`, `1-Overview.md` and `PRODUCT.md`.
+- **Checked:** with curl on a throwaway data folder: an unknown call gets `404`; `sent` followed by `client_signed` merges into one status; a later `PUT` keeps it; a wrong method gets `405`.
+- **Not done:** the attorney's countersignature isn't reported back, because DocuSign Connect webhooks would need another public endpoint. The card says the countersignature was requested by email.
+
 ## 2026-10-08: intake records, document kinds, template seeding
 
 **Made by:** Claude Code, working in the main app's repository (the Guava legal-intake voice agent).
@@ -55,6 +78,6 @@ Changes made to the Intake CRM after its first version (0.1.0), recorded so the 
 - The PNC page and the library were screenshotted in headless Chrome with a real record from the main app.
 
 ### Not done (left for later)
-- Nothing in the CRM writes to the Documents section yet. The e-signature step (DocuSign) will need a way to set the envelope's status, such as a `PATCH` on the PNC or a field inside `record`.
+- Nothing in the CRM writes to the Documents section yet. *(Done in the later entry above: `PATCH /pncs/{callId}/documents`.)*
 - Documents added by hand have no way to set a kind in the UI. Only the seed script sets kinds.
 - The UI routes (`/app/*`) still have no authentication. The server must stay on `127.0.0.1`.

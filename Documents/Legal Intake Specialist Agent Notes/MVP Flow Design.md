@@ -249,6 +249,15 @@ For an AI agent, documentation and data entry collapse into a single step: the c
 - How the documents are delivered (texted during the call vs emailed after) is decided in Stage 7.
 
 ### Stage 7: Outcome
+**Built** (see `../Documents and CRM Data Notes/Documents and Data Stack.md`, section 3):
+- **`next_steps`:** asks for an email address for the documents, spelled and read back, or "none".
+- **`send_documents` (worker):** builds one DocuSign envelope from the CRM's templates (Statement → fee agreement → HIPAA). The client signs first and is embedded; the attorney countersigns second, by email. DocuSign then emails the caller, and the email's button opens our signing page (`embeddedRecipientStartURL`).
+- **`documents_sent`:** confirms the email arrived, then the verbatim line.
+- **Why email, not text:** texting was built first, but Guava refuses SMS until the number's SMS brand and campaign registration is approved. `texting.py` is kept for when it is.
+- **`documents_follow_up`:** "the team will send them", plus the `documents_not_sent` flag.
+- **No signature-watching on the call:** the caller signs whenever they're ready, and the CRM shows `client_signed` once they do.
+
+*The notes below are the original design, kept for history.*
 - **`signup`:**
   - `Field(key="text_ok", multiple_choice)` and a confirmed mobile number. Use `call.call_info.from_number` if it is a phone call (SDK §1.6).
   - The worker creates the e-sign envelope (mock, or a DocuSign / Dropbox Sign sandbox) with the **Statement first, then the contract**.
@@ -439,7 +448,7 @@ One mock server with a failure-injection switch (query flag or env) lets the ons
 ## Open decisions (for `/grill-with-docs`)
 1. ~~**The attorney-decision mechanism.**~~ Decided: the attorney's countersignature after the call is the acceptance (Stage 6).
 2. **The exact minimal conflict data set.** Is asking for adverse-party names before the story acceptable to callers?
-3. **Is SMS feasible?** Check the account's A2P 10DLC status. If not, use email or the mock as the primary channel.
+3. ~~**Is SMS feasible?**~~ Not without Guava's SMS brand and campaign registration, so documents go by email (Stage 7).
 4. **The deadline boundary:** whether to flag incidents within ±1 day of 2023-03-24 as `sol_boundary_case` for attorney review.
 5. **How the Statement of Client's Rights is signed:** e-signature in the same envelope, ordered before the contract? There is no Bar opinion on e-signing it.
 6. **Recording/AI disclosure wording,** and whether to continue if the caller **refuses** recording consent. Options: stop recording (no SDK switch exists; SDK §1.12), switch to message-taking, or end the call.
@@ -449,4 +458,4 @@ One mock server with a failure-injection switch (query flag or env) lets the ons
 2. Does the model fill later checklist fields from information volunteered early, and does it skip fields already collected in earlier tasks?
 3. What does a task transition sound like: a pause, or a natural bridge?
 4. How much delay does a slow handler add? Is the holding pattern actually necessary in practice?
-5. Can the sandbox number send SMS today?
+5. ~~Can the sandbox number send SMS today?~~ No: `400 SMS is not configured on +14843040566. No CarrierX messaging service ID on the use case.`

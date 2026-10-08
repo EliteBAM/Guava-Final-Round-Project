@@ -108,6 +108,21 @@ The main app builds it (`intake.build_record` in the agent). The PNC page shows 
 | `flags` | Chips under *Flags for the attorney* |
 | `completeness.critical_missing`, `completeness.important_missing` | *Missing information* |
 
+### `PATCH /pncs/{callId}/documents`: update the signing packet's status
+
+The main app calls this when the caller's documents are sent (DocuSign emails them), and again when the caller signs. The body is merged into the PNC's documents status, so each call only needs to send what changed. It is stored apart from `record`, so a later `PUT` of the record never overwrites it.
+
+| Field | Meaning |
+|---|---|
+| `status` | `sent` (waiting for the client) or `client_signed` (waiting for the attorney's countersignature) |
+| `envelopeId` | The DocuSign envelope |
+| `sentVia` | `email` or `text`: how the signing link was sent |
+| `sentTo` | The email address, or the last four digits of the number the link was texted to |
+| `sentAt`, `signedAt` | ISO-8601 timestamps |
+| `items` | The documents' names, in signing order |
+
+**`200 OK`** returns the PNC, now with `documents` set, and it refreshes live in the UI. **`404`** if there's no PNC for that call ID: create it with `PUT /pncs/{callId}` first.
+
 ### `GET /documents`: list documents
 
 **`200 OK`**, newest first:
@@ -159,5 +174,6 @@ Every error comes back as JSON with a readable message:
 - `id`: a UUID string.
 - `createdAt`, `updatedAt`: ISO-8601 timestamps in UTC.
 - `callId`: the main app's call ID, or `null` for PNCs made by `POST /pncs` or by hand.
+- `documents`: the signing packet's status (see `PATCH /pncs/{callId}/documents`), or `null` if nothing was sent.
 - `size`: in bytes.
 - `source`: `"api"` or `"manual"`. Manual means it was added by hand in the UI.

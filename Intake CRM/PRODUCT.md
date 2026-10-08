@@ -34,9 +34,10 @@ It should look polished, but it only needs to function minimally.
   - A list of PNCs with a detail view.
   - PNCs can be added by hand in the UI.
   - PNCs posted by the main app appear live.
-  - The detail view shows the call's intake record: disposition, summary, flags, one card per record section, missing information, and a Documents section that stays *Not sent yet* until e-signature is built.
+  - The detail view shows the call's intake record: disposition, summary, flags, one card per record section, missing information, and a Documents section showing the signing packet's status (sent by text, signed by the client).
 - **API, protected by an API key:**
   - `POST` a PNC profile, or `PUT` one by the main app's call ID (create or update, with the full intake record).
+  - `PATCH` a PNC's signing-packet status by call ID.
   - List documents (with their kind) and `GET` them.
 - **Terminology:** PNC means Potential New Client.
 

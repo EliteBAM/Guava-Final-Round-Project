@@ -17,8 +17,11 @@ from guava.helpers.rag import DocumentQA
 import compliance
 import conflicts
 import crm
+import esign
 import intake
 import qualification
+import settings
+import signing_server
 import timezones
 
 logger = logging.getLogger("guava.intro_agent")
@@ -177,7 +180,7 @@ def on_agent_speech(call: guava.Call, event: AgentSpeechEvent):
     state = call_state(call)
     if state["task"] in DISCLOSURE_TASKS:
         state["disclosure_speech"].append(event.utterance)
-    elif state["task"] == "next_steps":
+    elif state["task"] in CLOSING_TASKS:
         state["next_steps_speech"].append(event.utterance)
 
 
@@ -638,13 +641,24 @@ def run_recheck(call: guava.Call, other_parties: str):
     start_next_steps(call)
 
 
-# Next steps and retainer (Stage 6): explain what happens next and the documents. Nothing is sent on this call yet,
-# and the attorney's countersignature after the call is the acceptance.
+# Next steps and retainer (Stages 6-7): explain what happens next, then email the signing packet (DocuSign) if the
+# caller gives an address. Signing is never pushed on the call, and the attorney's countersignature after the call is
+# the acceptance. Graph: NextSteps -> send (worker) -> DocumentsSent | DocumentsFollowUp -> Wrap
+# (Texting the link is ready in texting.py, but Guava's number needs SMS brand and campaign registration first.)
+
+# in signing order: the Statement must come before the contract (Rule 4-1.5(f)(4)(C))
+SIGNING_PACKET = ("statement_of_client_rights", "fee_agreement", "hipaa_authorization")
+CLOSING_TASKS = ("documents_sent", "documents_follow_up")
+
+CLOSING_OFFER = (
+    "Let them know that if they have any questions about the statement or the agreement before signing, an attorney "
+    "can go over them. Then ask if there's anything else you can help with."
+)
+
 
 def start_next_steps(call: guava.Call):
     state = call_state(call)
     state["task"] = "next_steps"
-    state["next_steps_speech"] = []
     # set now: this is the outcome even if the call ends before the task reports complete
     state["disposition"] = "pending_signature"
     call.set_task(
@@ -660,18 +674,116 @@ def start_next_steps(call: guava.Call):
             "attorney and team are typically assigned within about a week. In the meantime, suggest they gather any "
             "photos, the police report number, medical records, and insurance cards.",
             "Explain the documents: they'll first receive a Statement of Client's Rights, which they should read in "
-            "full, and then the fee agreement, which they can sign whenever they're ready. There's no pressure. "
-            "They'll also get a short form for details like their insurance policies and their doctors' contact "
-            "information.",
-            guava.Say(compliance.NEXT_STEPS_SCRIPT),
-            "Let them know that if they have any questions about the statement or the agreement before signing, an "
-            "attorney can go over them. Then ask if there's anything else you can help with.",
+            "full, then the fee agreement, and a form that lets the team request their medical records. They can sign "
+            "whenever they're ready; there's no pressure. They'll also get a short form for details like their "
+            "insurance policies and their doctors' contact information.",
+            guava.Field(
+                key="documents_email",
+                field_type="text",
+                description=(
+                    "The email address they'd like the documents sent to. Ask them to spell it, then read it back to "
+                    "confirm. If they'd rather not give one, write \"none\". Once they've confirmed it, tell them "
+                    "you're sending it now and it'll take just a moment."
+                ),
+                required=True,
+            ),
         ],
     )
 
 
 @agent.on_task_complete("next_steps")
 def on_next_steps_complete(call: guava.Call):
+    email = esign.normalize_email(call.get_field("documents_email"))  # "none" -> None
+    if email:
+        POOL.submit(send_documents, call, email)
+    else:
+        logger.info("Documents not emailed (session: %s): declined or no usable email", call.id)
+        start_documents_follow_up(call)
+
+
+def send_documents(call: guava.Call, email: str):
+    """Worker: build the signing packet in DocuSign from the CRM's templates, and have DocuSign email the caller its
+    link (our signing page). Any failed step means the team sends the documents instead (flag documents_not_sent);
+    the caller hears that, not an error."""
+    state = call_state(call)
+    fields = {key: call.get_field(key) for key in intake.ALL_KEYS}
+    record = intake.build_record(fields, state, call.id, datetime.now().astimezone())
+    name = record["caller"]["name"] or "Client"
+    # the PNC has to exist before its documents status can be set; the full record replaces this at session end
+    crm.upsert_pnc(call.id, name, fields.get("narrative") or "", record)
+
+    templates = crm.fetch_templates(SIGNING_PACKET)
+    envelope_id = esign.create_envelope(call.id, name, email, qualification.as_date(fields.get("incident_date")),
+                                        templates) if templates else None
+    link = signing_server.link_for(envelope_id) if envelope_id else None
+    sent = bool(envelope_id and link) and esign.send_envelope(envelope_id or "", link or "")
+    if not (templates and sent):
+        logger.warning("Documents not sent (session: %s): templates=%s envelope=%s link=%s sent=%s", call.id,
+                       bool(templates), bool(envelope_id), bool(link), sent)
+        start_documents_follow_up(call)
+        return
+
+    documents = {
+        "status": "sent",
+        "envelopeId": envelope_id,
+        "sentVia": "email",
+        "sentTo": email,
+        "sentAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "items": [doc_name for doc_name, _ in templates],
+    }
+    state["documents"] = documents
+    crm.update_documents(call.id, documents)
+    start_documents_sent(call, email)
+
+
+def start_documents_sent(call: guava.Call, email: str):
+    state = call_state(call)
+    state["task"] = "documents_sent"
+    state["next_steps_speech"] = []
+    call.set_task(
+        "documents_sent",
+        objective="Confirm the documents email arrived, then close out. Don't explain or interpret the documents.",
+        checklist=[
+            f"Let them know you've just emailed a link to their documents to {email}. It comes from DocuSign, on "
+            "behalf of Morgan and Morgan.",
+            guava.Field(
+                key="email_received",
+                field_type="multiple_choice",
+                choices=["yes", "not_yet"],
+                question="Did that email come through?",
+                description=(
+                    "Whether the email arrived. If it hasn't yet, reassure them it can take a minute and might land "
+                    "in spam, and that the team can resend it; choose not_yet and move on."
+                ),
+                required=True,
+            ),
+            "Let them know the link is just for them: they'll see the Statement of Client's Rights first, then the "
+            "fee agreement and the medical records form. They can open it now or later, and sign whenever they're "
+            "ready.",
+            guava.Say(compliance.NEXT_STEPS_SCRIPT),
+            CLOSING_OFFER,
+        ],
+    )
+
+
+def start_documents_follow_up(call: guava.Call):
+    """The documents weren't emailed (declined, no usable email, or a failed send): the team sends them."""
+    state = call_state(call)
+    state["flags"].add("documents_not_sent")
+    state["task"] = "documents_follow_up"
+    state["next_steps_speech"] = []
+    call.set_task(
+        "documents_follow_up",
+        objective="Let them know how they'll get the documents, then close out. Don't explain or interpret them.",
+        checklist=[
+            "Let them know the team will send them the documents shortly. Don't mention any technical problem.",
+            guava.Say(compliance.NEXT_STEPS_SCRIPT),
+            CLOSING_OFFER,
+        ],
+    )
+
+
+def on_closing_complete(call: guava.Call):
     state = call_state(call)
     missing = compliance.missing_phrases(" ".join(state["next_steps_speech"]), compliance.NEXT_STEPS_PHRASES)
     if missing:
@@ -683,6 +795,10 @@ def on_next_steps_complete(call: guava.Call):
         "If you haven't said goodbye yet, thank them warmly and wish them well in their recovery. "
         "If you already said goodbye, end the call without saying it again."
     ))
+
+
+for closing_task_id in CLOSING_TASKS:
+    agent.on_task_complete(closing_task_id)(on_closing_complete)
 
 
 @agent.on_session_end
@@ -726,7 +842,9 @@ def write_intake_record(call: guava.Call, state: dict):
 
 # looks like it only inits logger and attaches listen channel if it's main. Suggesting maybe that this could have been a separate agent script for a runner in main?
 if __name__ == "__main__":
+    settings.load_env_file()  # DocuSign, signing link and SMS settings (.env at the repo root)
     logging_utils.configure_logging()
+    signing_server.start()  # the page the texted link opens; ngrok exposes it
 
     # Run this to attach your agent to a phone number. Call your agent's number to talk to it.
     agent.listen_phone("+14843040566")

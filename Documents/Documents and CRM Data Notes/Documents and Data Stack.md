@@ -1,6 +1,6 @@
 # Documents and Data Stack
 
-What paperwork the intake produces, which templates we keep and why, and how one call's data moves from the voice agent to the CRM (and, next, to DocuSign and the caller's phone).
+What paperwork the intake produces, which templates we keep and why, and how one call's data moves from the voice agent to the CRM, DocuSign and the caller's inbox.
 
 Related:
 - `../Legal Intake Specialist Agent Notes/PI Intake Research.md`: the research behind the documents (section 1).
@@ -19,7 +19,7 @@ The research found five documents around a personal injury intake (PIR section 1
 | **Intake summary** | Written for the reviewing attorney, right after the call | **Data, not a PDF.** It differs on every call. The narrative is the PNC's *Summary*; flags and missing information are their own sections. |
 | **Client questionnaire** | The client, after signing | **Template:** `client-questionnaire`. It sits in the library; sending it is a later phase. |
 | **Motor-vehicle supplement** | The client, after signing | **Merged into the questionnaire** as section 6, rather than a separate form. |
-| **Signing packet** | The client signs, then the attorney countersigns | **Templates:** `statement-of-client-rights`, `contingency-fee-agreement` and `hipaa-authorization`, sent through DocuSign (next phase). |
+| **Signing packet** | The client signs, then the attorney countersigns | **Templates:** `statement-of-client-rights`, `contingency-fee-agreement` and `hipaa-authorization`, emailed to the caller by DocuSign during the call, as one envelope (section 3). |
 
 **Skipped from the signing packet:**
 - **Letter of representation.** The firm sends it to the insurers after the case is accepted; it isn't something the client signs on intake.
@@ -44,7 +44,7 @@ All four are marked **SAMPLE**, with a watermark and a note: "for a software dem
 
 Each template carries hidden anchor strings: white 7pt text at the spot where a field goes. They're invisible on the page but present in the PDF's text layer. When the envelope is created, DocuSign places a tab at **every** occurrence of an anchor across the envelope, so one tab definition covers all the documents.
 
-| Anchor | Field | Filled by | DocuSign tab (planned) | In |
+| Anchor | Field | Filled by | DocuSign tab (`esign.py`) | In |
 |---|---|---|---|---|
 | `\c_name\` | Client's full name | Code, from the call (locked) | Text, or FullName | all four |
 | `\c_sign\` | Client signature | Client | SignHere | all four |
@@ -81,16 +81,35 @@ Guava call fields (call.get_field)
 
 Callers routed to other teams (existing clients, adjusters, providers, other matters) are written to the JSON file only.
 
-**Planned (DocuSign and SMS phase):**
+**The signing packet, during the call** (`main.py`: `next_steps` → `send_documents` → `documents_sent` or `documents_follow_up`):
 
 ```
-next_steps task: permission to text, and a confirmed number
-  └─ worker: GET /api/v1/documents → pick by kind → download the three signing-packet PDFs
-       └─ DocuSign: one envelope, Statement first, anchor tabs, client at routing order 1, attorney at 2
-            └─ guava.Client().send_sms(from = call.call_info.to_number, to = caller)
-                 with a link to our redirect page (via ngrok), which opens a fresh signing session on each tap
-            └─ envelope status → the PNC's Documents section
+next_steps: the agent asks for an email address (spelled, then read back), or "none"
+  └─ send_documents (worker thread)
+       ├─ crm.upsert_pnc            the PNC exists mid-call (the full record replaces it at session end)
+       ├─ crm.fetch_templates       GET /documents → by kind → the three PDFs, Statement first
+       ├─ esign.create_envelope     a draft: anchor tabs, client embedded (routing 1), attorney by email (routing 2)
+       ├─ signing_server.link_for   {SIGNING_PUBLIC_URL}/sign/{envelope}/{hmac}
+       ├─ esign.send_envelope       the link becomes the client's embeddedRecipientStartURL, then status "sent":
+       │                            DocuSign emails the caller, and the email's button opens our link
+       └─ crm.update_documents      PATCH /pncs/{callId}/documents {status: sent, sentVia: email, sentTo, ...}
+  ├─ documents_sent: "did that email come through?", the verbatim next-steps line, offer an attorney
+  └─ documents_follow_up (declined, or any step failed): "the team will send them", same line; flag documents_not_sent
+
+Caller clicks the email's button (DocuSign → ngrok → signing_server on 127.0.0.1:3001)
+  └─ HMAC checked → esign.signing_url → 302 to a fresh DocuSign session (DocuSign's own URLs last minutes)
+       └─ DocuSign returns to /done?event=signing_complete → esign.client_signed confirms
+            → PATCH documents {status: client_signed} → thank-you page; DocuSign emails the attorney to countersign
 ```
+
+**Why the client is "embedded" yet still gets DocuSign's email:**
+- An embedded signer (`clientUserId`) signs through our page, so we get the `/done` return and can update the CRM.
+- Setting `embeddedRecipientStartURL` makes DocuSign send the invitation email anyway, and points its button at our page. DocuSign calls this hybrid signing.
+- Our link contains the envelope ID, so the envelope is created as a draft, given the link, and then sent.
+
+No envelope is made unless DocuSign is configured, so tests take the follow-up path. The attorney's countersignature isn't reported back yet, because that would need DocuSign Connect webhooks.
+
+**Texting:** `texting.py` (`guava.Client().send_sms`) is built and tested, but the call doesn't use it yet. Guava refuses the send: `400 SMS is not configured on +14843040566. No CarrierX messaging service ID on the use case.` The fix is account-side (section 7). Check it with `python -m texting +1XXXXXXXXXX`.
 
 ---
 
@@ -104,7 +123,7 @@ The base is `http://127.0.0.1:3000/api/v1`, with an `X-API-Key` header. The full
 | `PUT /pncs/{callId}` | Create or update a PNC with the full intake record | `Application/crm.py` | **New** |
 | `GET /documents` | List the templates, with their `kind` | The DocuSign worker | `kind` is **new** |
 | `GET /documents/{id}` | Download a template PDF | The DocuSign worker | Original |
-| Set the PNC's document status | Show the envelope's status on the PNC | The DocuSign worker | **Planned** (not built) |
+| `PATCH /pncs/{callId}/documents` | The signing packet's status (sent, client_signed) | `crm.update_documents` | **New** |
 
 ---
 
@@ -122,11 +141,19 @@ The base is `http://127.0.0.1:3000/api/v1`, with an `X-API-Key` header. The full
 
 ## 6. Configuration
 
+These settings live in `Application/.env` (or a `.env` at the repo root). `main.py` and `python -m esign` load it; tests never do. `KEY=value` and `export KEY=value` lines both work.
+
 | Variable | Read by | Default |
 |---|---|---|
 | `CRM_API_URL` | `Application/crm.py` | `http://127.0.0.1:3000/api/v1` |
 | `CRM_API_KEY` | `Application/crm.py` | The contents of `Intake CRM/data/api-key.txt` |
 | `CONFLICT_API_URL` | `Application/conflicts.py` | `http://127.0.0.1:8787` (`mock_api.py`) |
+| `DOCUSIGN_INTEGRATION_KEY`, `DOCUSIGN_USER_ID`, `DOCUSIGN_ACCOUNT_ID` | `Application/esign.py` | none (required) |
+| `DOCUSIGN_PRIVATE_KEY_PATH` | `Application/esign.py` | `Application/docusign_private.key` (gitignored by `*.key`) |
+| `ATTORNEY_NAME`, `ATTORNEY_EMAIL` | `Application/esign.py`: the countersigning attorney | none (required) |
+| `SIGNING_PUBLIC_URL`, `SIGNING_SECRET` | `Application/signing_server.py`: the ngrok address and the link-signing key | none (required for links) |
+| `SMS_ENABLED` | `Application/texting.py` (its command-line check only; the call emails) | off: texts are only sent when it's `1` |
+| `GUAVA_AGENT_NUMBER` | `python -m texting`: the number it texts from | `+14843040566` |
 | `PORT` | The CRM server | `3000` |
 | `DATA_DIR` | The CRM server and `seed.js` | `Intake CRM/data` |
 | `ASSETS_DIR` | `seed.js` | `Assets/` |
@@ -135,8 +162,12 @@ The base is `http://127.0.0.1:3000/api/v1`, with an `X-API-Key` header. The full
 
 ## 7. Open items
 
-- **DocuSign:** create the app's integration key and an RSA key pair, add a redirect URI, and grant consent once (JWT auth). This is the user's step, in the developer account.
-- **ngrok:** a free account and the install, to expose the one redirect page.
-- **SMS:** confirm the Guava number can send texts, which needs A2P 10DLC registration, with one test text to your own phone.
-- **CRM:** a way to record the envelope's status on a PNC (for example `PATCH /pncs/{callId}`, or a `documents` key inside `record`). The changelog lists this as not done.
+- **SMS:** blocked on both sides, so the call emails instead.
+  - **Guava** needs four approvals on its Compliance page before `send_sms` works: Outbound Dialing registration, then a use case, then an SMS brand registration, then an SMS campaign registration (A2P 10DLC). See <https://goguava.ai/docs/outbound-and-sms-permissions.md>.
+  - **DocuSign's own SMS delivery** is off on the sandbox (`allowSMSDelivery = false`), and turning it on needs DocuSign's approval.
+  - Once Guava's registration is approved, texting the same link is a small change in `main.send_documents`.
+- **Attorney countersignature:** not reported back to the CRM. That would need DocuSign Connect webhooks, or polling.
+- **Questionnaire:** in the library, but not sent yet.
+
+**Running the full demo:** start the CRM (`npm start` in `Intake CRM`), `mock_api.py`, `ngrok http 3001 --url=<your domain>`, then `python -m main` in `Application`. `python -m esign you@example.com`, with ngrok running, does a sandbox dry run without a call: it emails you a test envelope and serves the signing page until you press Enter.
 - **Live tests:** they post their PNCs to the CRM when it's running, because `on_session_end` runs in live tests too. The CRM has no PNC delete. If test PNCs pile up, stop the CRM, delete `Intake CRM/data/`, then start it and run `npm run seed` again. You get a new API key, which `crm.py` picks up from the file.
