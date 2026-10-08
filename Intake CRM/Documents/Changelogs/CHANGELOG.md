@@ -2,6 +2,16 @@
 
 Changes made to the Intake CRM after its first version (0.1.0), recorded so the project can be handed back to whoever built it.
 
+## 2026-10-08 (final): PDF previews fixed
+
+**Made by:** Claude Code, in the main app's repository.
+
+**Why:** every thumbnail in the Document Library, and the preview in the details dialog, showed "Preview unavailable". This dates from 0.1.0.
+
+- **Cause:** `renderThumb()` in `public/app.js` called `pdf.destroy()` after rendering. In pdf.js 6, the loaded document no longer has `destroy()`; it is on the loading task. The page rendered, but the throw in `finally` rejected the result, so the fallback was shown.
+- **Fix:** keep the loading task from `getDocument()` and call `task.destroy()` in the `finally`. Awaiting `task.promise` inside the `try` also frees the worker when a PDF fails to load. `fillPage()` now logs `console.warn('PDF preview failed', err)` before showing the fallback, so a future failure shows its reason.
+- **Checked:** in headless Chrome 154 against the running server, the library shows 4 of 4 thumbnails (it was 0 of 4), the dialog preview renders, and the console has no warnings.
+
 ## 2026-10-08 (latest): documents sent by email
 
 **Made by:** Claude Code, in the main app's repository.

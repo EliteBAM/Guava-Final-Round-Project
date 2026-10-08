@@ -122,8 +122,9 @@ function renderThumb(docId, cssWidth) {
   if (!thumbCache.has(key)) {
     const job = (async () => {
       const pdfjs = await loadPdfjs();
-      const pdf = await pdfjs.getDocument({ url: `/app/documents/${docId}/file` }).promise;
+      const task = pdfjs.getDocument({ url: `/app/documents/${docId}/file` });
       try {
+        const pdf = await task.promise;
         const page = await pdf.getPage(1);
         const base = page.getViewport({ scale: 1 });
         const scale = (cssWidth * Math.min(window.devicePixelRatio || 1, 2.5)) / base.width;
@@ -134,7 +135,7 @@ function renderThumb(docId, cssWidth) {
         await page.render({ canvas, viewport }).promise;
         return canvas;
       } finally {
-        pdf.destroy();
+        task.destroy(); // pdf.js 6: destroy() is on the loading task, not the document
       }
     })();
     job.catch(() => thumbCache.delete(key));
@@ -155,7 +156,8 @@ function fillPage(pageEl, docId, cssWidth) {
       canvas.setAttribute('aria-hidden', 'true');
       pageEl.replaceChildren(canvas);
     })
-    .catch(() => {
+    .catch((err) => {
+      console.warn('PDF preview failed', err);
       pageEl.replaceChildren(el('span', { class: 'page-fallback', text: 'Preview unavailable' }));
     });
 }
