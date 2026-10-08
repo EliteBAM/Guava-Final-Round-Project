@@ -59,6 +59,12 @@ CONSENT_DECLINED_INSTRUCTIONS = (
     "Do not ask them any further questions."
 )
 
+# read verbatim to insurance adjusters and other parties' lawyers (Rule 4-1.6): never confirm or deny a client
+CONFIDENTIALITY_SCRIPT = (
+    "I'm not able to confirm whether anyone is a client of the firm or discuss any case, "
+    "but I'll have the right team reach out to you."
+)
+
 # phrases that must appear in the agent's actual speech for the disclosures to count as delivered
 REQUIRED_PHRASES = ("not a lawyer", "employee", "legal advice", "recorded")
 

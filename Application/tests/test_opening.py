@@ -117,6 +117,7 @@ class TestOpeningHandlers(unittest.TestCase):
         state = main.CALL_STATE[self.call.id]
         self.assertEqual("opening_complete", state["disposition"])
         self.assertIn("recording_consent", state["flags"])
+        self.assertEqual("triage", tasks_set(self.call)[-1])  # consent leads straight into triage
 
     def test_consent_no_then_yes(self):
         main.on_intro_complete(self.call)
@@ -182,7 +183,7 @@ class TestOpeningScenarios(unittest.TestCase):
             "and agree to the call being recorded."
         )
         print(session.get_transcript())
-        self.assertEqual("opening_complete", state.get("disposition"))
+        self.assertIn("recording_consent", state.get("flags", set()))
         self.assertNotIn("disclosure_unverified", state.get("flags", set()))
         session.evaluate(
             pass_criteria=[
@@ -198,7 +199,7 @@ class TestOpeningScenarios(unittest.TestCase):
             "the first time. If they explain why, agree."
         )
         print(session.get_transcript())
-        self.assertEqual("opening_complete", state.get("disposition"))
+        self.assertIn("recording_consent", state.get("flags", set()))
 
     def test_s3_decline_twice(self):
         session, state = self.run_roleplay(
@@ -225,7 +226,7 @@ class TestOpeningScenarios(unittest.TestCase):
             "ask why it is recorded, and then ask whether they can turn the recording off. Then agree to recording."
         )
         print(session.get_transcript())
-        self.assertEqual("opening_complete", state.get("disposition"))
+        self.assertIn("recording_consent", state.get("flags", set()))
         session.evaluate(
             pass_criteria=["The agent said the recording is so the reviewing attorney has an accurate record."],
             fail_criteria=[

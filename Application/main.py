@@ -73,6 +73,7 @@ def on_call_start(call: guava.Call):
     # on call start, set some initial tasks and record log for session start
     logger.info("Call started (session: %s)", call.id)
     state["task"] = "introduction"
+
     call.set_task(
         "introduction",
         objective=(
@@ -226,8 +227,104 @@ def on_consent_given(call: guava.Call):
     state = call_state(call)
     state["flags"].add("recording_consent")
     state["disposition"] = "opening_complete"
-    # placeholder until the triage task is built
-    call.hangup(final_instructions="Thank them, and let them know a member of the intake team will follow up shortly.")
+    start_triage(call)
+
+
+# Triage: is this a new prospective client calling about their own injury? Everyone else is routed away.
+# Graph (MVP Flow Design.md, Part 3): Triage -> ConflictScreen | RouteMessage | Referral | Wrap
+# Only the main path continues; every other route is a placeholder hangup (routing to teams is out of MVP scope).
+
+# caller_type -> (who would handle the caller, disposition, must the confidentiality line be said)
+TRIAGE_ROUTES = {
+    "existing_client": ("their case team", "routed_existing_client", False),
+    # Rule 4-1.6: adjusters and other parties' lawyers always hear that we can't confirm or discuss any client
+    "insurance_or_attorney": ("the right team", "routed_insurance_or_attorney", True),
+    "medical_provider": ("the client's case team", "routed_medical_provider", False),
+    "other_legal_matter": ("the right department", "referred", False),
+}
+
+
+def start_triage(call: guava.Call):
+    call_state(call)["task"] = "triage"
+    call.set_task(
+        "triage",
+        objective="Find out why the caller is calling so you can direct them. Do not collect details about any incident yet.",
+        checklist=[
+            ("In your own words tell the caller that before you can begin collecting information on their incident, you want to confirm that "
+            "they are calling on behalf of themselves to seek representation for a personal injury. If that is not the case, tell them that this line "
+            "is for new client intake, but that if they tell you who they are and their reason for calling you may be able to redirect them."),
+            guava.Field(
+                key="caller_type",
+                field_type="multiple_choice",
+                choices=[
+                    "new_injury_matter",
+                    "existing_client",
+                    "insurance_or_attorney",
+                    "medical_provider",
+                    "other_legal_matter",
+                    "other",
+                ],
+                description=(
+                    "Why they are calling. new_injury_matter: they or someone they know was hurt and they want help. "
+                    "existing_client: they are already a Morgan and Morgan client calling about their case. "
+                    "insurance_or_attorney: an insurance adjuster or a lawyer for another party. "
+                    "medical_provider: a doctor's office, hospital, or lienholder calling about a patient. "
+                    "other_legal_matter: a legal issue that isn't an injury, like divorce, criminal, or employment. "
+                    "other: anything else, such as sales calls or wrong numbers. "
+                    "If they start telling the whole story, gently let them know you'll get to the details in just a moment."
+                ),
+                required=True,
+            ),
+            guava.Field(
+                key="on_behalf_of",
+                field_type="multiple_choice",
+                choices=["self", "someone_else", "not_applicable"],
+                description=(
+                    "Whether the person who was injured is the caller themselves. "
+                    "If the call isn't about an injury, choose not_applicable without asking."
+                ),
+                required=True,
+            ),
+        ],
+    )
+
+
+@agent.on_task_complete("triage")
+def on_triage_complete(call: guava.Call):
+    state = call_state(call)
+    caller_type = call.get_field("caller_type")
+    on_behalf_of = call.get_field("on_behalf_of")
+    logger.info("Triage complete: caller_type=%s on_behalf_of=%s (session: %s)", caller_type, on_behalf_of, call.id)
+
+    # main route: a new prospective client, calling about their own injury
+    if caller_type == "new_injury_matter" and on_behalf_of == "self":
+        state["disposition"] = "triage_passed"
+        # placeholder until the conflict screen is built
+        call.hangup(final_instructions="Thank them, and let them know a member of the intake team will follow up shortly.")
+        return
+
+    # placeholder routes below: record who called, tell them who will reach out, and end the call
+
+    # the injured person (or their estate's representative) must be the client, so the intake team arranges that contact
+    if caller_type == "new_injury_matter":
+        route_away(call, "our intake team", "routed_third_party")
+        return
+
+    if caller_type in TRIAGE_ROUTES:
+        route_away(call, *TRIAGE_ROUTES[caller_type])
+        return
+
+    state["disposition"] = "not_a_prospect"
+    call.hangup(final_instructions="Politely let them know this line is for people who've been injured, and wish them well.")
+
+
+def route_away(call: guava.Call, team: str, disposition: str, confidential: bool = False):
+    call_state(call)["disposition"] = disposition
+    confidentiality = f"Say exactly: \"{compliance.CONFIDENTIALITY_SCRIPT}\" " if confidential else ""
+    call.hangup(final_instructions=(
+        f"{confidentiality}Let them know you'll have {team} reach out to them, then thank them and say goodbye. "
+        "Don't ask any more questions or discuss any case."
+    ))
 
 
 @agent.on_session_end
@@ -235,10 +332,13 @@ def on_session_end(call: guava.Call, event: BotSessionEnded):
     state = CALL_STATE.pop(call.id, None) or {}
     # opening audit record: what was disclosed and consented to (persisted to the CRM in the post-call stage)
     logger.info(
-        "Session ended (session: %s) caller_name=%r recording_consent=%r flags=%s disposition=%s termination=%s",
+        "Session ended (session: %s) caller_name=%r recording_consent=%r caller_type=%s on_behalf_of=%s "
+        "flags=%s disposition=%s termination=%s",
         call.id,
         call.get_field("caller_name"),
         call.get_field("recording_consent_final") or call.get_field("recording_consent"),
+        call.get_field("caller_type"),
+        call.get_field("on_behalf_of"),
         sorted(state.get("flags", ())),
         state.get("disposition") or "partial_intake",
         event.termination_reason,

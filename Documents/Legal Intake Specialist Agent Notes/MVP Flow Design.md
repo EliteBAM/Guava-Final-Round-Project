@@ -34,7 +34,7 @@
   | Caller type | Route |
   |---|---|
   | New PNC, about their own injury | Continue to Stage 3 |
-  | Calling for someone else | Collect relationship. The claimant (or the estate's personal representative) must be the signer. |
+  | Calling for someone else | Message to the intake team (MVP decision). The claimant (or the estate's personal representative) must be the signer, so the team arranges contact with them. |
   | Existing client | Case team / message. **No case details discussed.** |
   | Insurance adjuster or opposing counsel | Message only. **No client information**, because of confidentiality (Rule 4-1.6). |
   | Medical provider or lienholder | Case team / message |
@@ -248,9 +248,11 @@ For an AI agent, documentation and data entry collapse into a single step: the c
 stateDiagram-v2
     [*] --> Opening
     Opening --> Triage
-    Triage --> ConflictScreen: new injury matter
+    Triage --> ConflictScreen: new injury matter, own behalf
     Triage --> RouteMessage: existing client / adjuster / provider
     Triage --> Referral: other legal matter
+    Triage --> RouteMessage: calling for someone else
+    Triage --> Wrap: spam / other
     ConflictScreen --> Holding: names + date collected (async check starts)
     Holding --> Story: check CLEAR
     Holding --> DeclineConflict: CONFLICT (no reason given)
