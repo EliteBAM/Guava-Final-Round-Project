@@ -1,0 +1,128 @@
+/* Shared print styles for the template documents. build-pdfs.ps1 prints each .html file to a letter-size PDF. */
+
+@page { size: Letter; margin: 0.8in 0.9in 0.85in; }
+
+:root {
+  --ink: #1b1d22;
+  --muted: #5b606b;
+  --rule: #b9bdc6;
+  --wash: #f3f4f6;
+  --sans: 'Segoe UI', Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+body { margin: 0; color: var(--ink); font: 10.5pt/1.45 Georgia, 'Times New Roman', serif; }
+
+/* repeated on every printed page */
+.watermark {
+  position: fixed;
+  top: 40%;
+  left: 0;
+  right: 0;
+  z-index: -1;
+  text-align: center;
+  transform: rotate(-32deg);
+  color: rgba(27, 29, 34, 0.05);
+  font: 700 104pt/1 var(--sans);
+  letter-spacing: 0.08em;
+}
+
+.letterhead {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding-bottom: 6pt;
+  border-bottom: 1.25pt solid var(--ink);
+  font-family: var(--sans);
+}
+.firm { font-size: 13pt; font-weight: 700; letter-spacing: 0.02em; }
+.practice { color: var(--muted); font-size: 8.5pt; letter-spacing: 0.12em; text-transform: uppercase; }
+
+.sample-note {
+  margin: 8pt 0 18pt;
+  padding: 5pt 8pt;
+  border: 0.75pt solid var(--rule);
+  background: var(--wash);
+  color: var(--muted);
+  font: 8pt/1.35 var(--sans);
+}
+
+h1 { margin: 0 0 4pt; font: 700 15pt/1.25 var(--sans); letter-spacing: 0.01em; }
+h1.centered { text-align: center; }
+.subtitle { margin: 0 0 16pt; color: var(--muted); font: 9pt/1.4 var(--sans); }
+.subtitle.centered { text-align: center; }
+h2 {
+  margin: 16pt 0 6pt;
+  font: 700 9pt/1.3 var(--sans);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  break-after: avoid;
+}
+h3 { margin: 10pt 0 4pt; font: 600 9.5pt/1.3 var(--sans); break-after: avoid; }
+
+p { margin: 0 0 7pt; }
+ol, ul { margin: 0 0 8pt; padding-left: 18pt; }
+li { margin-bottom: 6pt; }
+li::marker { font-weight: 700; }
+
+.lead { font-style: italic; }
+
+/* a clause the rule requires word for word */
+.required {
+  margin: 10pt 0;
+  padding: 7pt 10pt;
+  border-left: 2.5pt solid var(--ink);
+  background: var(--wash);
+  break-inside: avoid;
+}
+/* not uppercased: rule citations are case-sensitive, (f)(4)(A)(i) */
+.required .tag { display: block; margin-bottom: 3pt; color: var(--muted); font: 600 8pt/1.3 var(--sans); letter-spacing: 0.02em; }
+
+table { width: 100%; margin: 4pt 0 10pt; border-collapse: collapse; break-inside: avoid; }
+th, td { padding: 4pt 6pt; border: 0.75pt solid var(--rule); text-align: left; vertical-align: top; }
+th { background: var(--wash); font: 600 8.5pt/1.3 var(--sans); }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.blank-rows td { height: 22pt; }
+
+/* a line the signer writes on, or DocuSign fills; .anchor marks the spot */
+.fill {
+  position: relative;
+  display: inline-block;
+  min-width: 2.4in;
+  height: 1.25em;
+  border-bottom: 0.75pt solid var(--ink);
+  vertical-align: bottom;
+}
+.fill.short { min-width: 1.3in; }
+.fill.wide { min-width: 4in; }
+
+/* DocuSign anchor text: white, so it's invisible on the page but present in the PDF's text layer */
+.anchor { position: absolute; left: 2pt; bottom: 2pt; color: #fff; font: 7pt/1 Arial, sans-serif; white-space: nowrap; }
+
+.field-row { display: flex; align-items: flex-end; gap: 8pt; margin: 0 0 9pt; }
+.field-row .label { flex: none; font: 9pt/1.3 var(--sans); }
+.field-row .fill { flex: 1; min-width: 0; }
+
+.choices { font: 9pt/1.3 var(--sans); }
+.box { display: inline-block; width: 8pt; height: 8pt; margin: 0 3pt 0 10pt; border: 0.75pt solid var(--ink); vertical-align: -1pt; }
+.box:first-child { margin-left: 0; }
+
+.signatures { display: grid; grid-template-columns: 1fr 1fr; gap: 22pt 34pt; margin-top: 22pt; break-inside: avoid; }
+.signatures.single { grid-template-columns: 1fr 0.6fr; }
+.sig .line { position: relative; height: 28pt; border-bottom: 0.75pt solid var(--ink); }
+.sig .label { margin-top: 3pt; color: var(--muted); font: 8.5pt/1.3 var(--sans); }
+
+/* tighter setting for documents that should keep their signatures on the last page of text */
+@page compact { margin: 0.6in 0.85in 0.6in; }
+body.compact { page: compact; font-size: 10pt; line-height: 1.4; }
+body.compact li { margin-bottom: 4.5pt; }
+body.compact h2 { margin-top: 10pt; }
+body.compact .sample-note { margin-bottom: 12pt; }
+body.compact .field-row { margin-bottom: 6pt; }
+body.compact .signatures { gap: 14pt 34pt; margin-top: 16pt; }
+body.compact .sig .line { height: 24pt; }
+
+.source { margin-top: 18pt; color: var(--muted); font: 7.5pt/1.4 var(--sans); }
+.page-break { break-before: page; }
+.keep { break-inside: avoid; }

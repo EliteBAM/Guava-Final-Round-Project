@@ -3,3 +3,6 @@ Private Information.txt
 __pycache__/
 # per-call intake records: callers' personal details
 Application/intake_records/
+# CRM installs and data: the API key, PNC records with callers' details, uploaded PDFs
+Intake CRM/node_modules/
+Intake CRM/data/

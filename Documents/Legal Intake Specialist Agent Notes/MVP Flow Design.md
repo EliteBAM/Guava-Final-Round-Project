@@ -266,7 +266,7 @@ For an AI agent, documentation and data entry collapse into a single step: the c
     - `POST /leads` (idempotent on `call.id`)
     - render the summary memo, disposition and, if declined, the non-engagement letter
   - Abandoned calls get a `partial_intake` disposition plus a follow-up task.
-  - **Implemented (MVP stand-in):** `write_intake_record` writes `intake.build_record(...)` to `Application/intake_records/{call_id}.json`, with no POST and no memo rendering yet.
+  - **Implemented (MVP stand-in):** `write_intake_record` writes `intake.build_record(...)` to `Application/intake_records/{call_id}.json`. For potential new clients it also sends the record to the mock intake CRM (`crm.upsert_pnc`, `PUT /pncs/{call_id}`, idempotent on the call ID), where it shows as the PNC's profile. There is no memo rendering yet. See `../Documents and CRM Data Notes/Documents and Data Stack.md`.
   - **No `call.*` commands here** (SDK P10).
 - **Transcript:**
   - Accumulate `on_caller_speech` / `on_agent_speech` per `call.id`, collapsing partials by `utterance_id` (SDK §1.12).

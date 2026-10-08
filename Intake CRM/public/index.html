@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Intake</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="/vendor/manrope.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/app.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <svg class="sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-plus" viewBox="0 0 20 20"><path d="M10 4.5v11M4.5 10h11"/></symbol>
+    <symbol id="i-close" viewBox="0 0 20 20"><path d="M5.5 5.5l9 9M14.5 5.5l-9 9"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 20 20"><path d="M4 6h12M8 6V4.5h4V6M5.5 6l.7 9.6a1 1 0 0 0 1 .9h5.6a1 1 0 0 0 1-.9L14.5 6M8.5 9v4.5M11.5 9v4.5"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 20 20"><path d="M10 13V4M6.5 7.5L10 4l3.5 3.5M4 12.5V15a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-2.5"/></symbol>
+    <symbol id="i-open" viewBox="0 0 20 20"><path d="M11.5 4H16v4.5M16 4l-6.5 6.5M14 11.5V15a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h3.5"/></symbol>
+    <symbol id="i-person" viewBox="0 0 20 20"><circle cx="10" cy="7" r="3"/><path d="M4 16.5c.8-2.9 3.2-4.5 6-4.5s5.2 1.6 6 4.5"/></symbol>
+  </svg>
+
+  <header class="topbar">
+    <a class="brand" href="#library">Intake</a>
+    <div class="tabs" role="tablist" aria-label="Sections">
+      <button class="tab" role="tab" id="tab-library" aria-controls="panel-library" data-tab="library">
+        Document Library <span class="tab-count" id="count-library"></span>
+      </button>
+      <button class="tab" role="tab" id="tab-pncs" aria-controls="panel-pncs" data-tab="pncs">
+        PNC Records <span class="tab-count" id="count-pncs"></span>
+      </button>
+    </div>
+    <p class="live" id="live" data-state="connecting"><span class="live-dot" aria-hidden="true"></span><span class="live-label">Connecting</span></p>
+  </header>
+
+  <main>
+    <!-- Document Library -->
+    <section class="panel library" id="panel-library" role="tabpanel" aria-labelledby="tab-library" tabindex="-1">
+      <div class="library-head">
+        <h1>Document Library</h1>
+        <p class="hint">
+          Drag PDF templates onto this page to add them, or
+          <button class="link" type="button" data-action="browse">browse files</button>.
+        </p>
+      </div>
+
+      <div class="notice" id="library-notice" role="status" aria-live="polite" hidden></div>
+
+      <ul class="doc-grid" id="doc-grid" aria-label="Documents"></ul>
+
+      <div class="library-empty" id="library-empty" hidden>
+        <svg class="icon icon-lg" aria-hidden="true"><use href="#i-upload"/></svg>
+        <p class="empty-title">Drop PDF templates here</p>
+        <p class="empty-text">They'll be stored in the library and available to the main app through the API.</p>
+        <button class="btn" type="button" data-action="browse">Browse files</button>
+      </div>
+
+      <input type="file" id="file-input" accept="application/pdf,.pdf" multiple hidden>
+
+      <div class="drop-overlay" id="drop-overlay" aria-hidden="true">
+        <div class="drop-target">
+          <svg class="icon icon-lg" aria-hidden="true"><use href="#i-upload"/></svg>
+          <p>Drop to add to the library</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- PNC Records -->
+    <section class="panel pncs" id="panel-pncs" role="tabpanel" aria-labelledby="tab-pncs" tabindex="-1" hidden>
+      <aside class="pnc-col">
+        <div class="pnc-col-head">
+          <h2>PNC Records</h2>
+          <button class="btn btn-primary btn-sm" type="button" id="new-pnc">
+            <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg> New PNC
+          </button>
+        </div>
+        <ul class="pnc-list" id="pnc-list" aria-label="Potential new clients"></ul>
+        <p class="pnc-list-empty" id="pnc-list-empty" hidden>No PNCs yet.</p>
+      </aside>
+      <div class="pnc-detail" id="pnc-detail" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <!-- Document details -->
+  <dialog class="doc-dialog" id="doc-dialog" aria-labelledby="doc-dialog-title">
+    <form class="doc-dialog-inner" id="doc-form" method="dialog" novalidate>
+      <div class="doc-dialog-preview">
+        <div class="page page-lg" id="doc-preview"></div>
+      </div>
+      <div class="doc-dialog-body">
+        <div class="dialog-head">
+          <h2 id="doc-dialog-title">Document details</h2>
+          <button class="icon-btn" type="button" data-action="close-dialog" aria-label="Close">
+            <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+          </button>
+        </div>
+
+        <label class="field">
+          <span class="field-label">Name</span>
+          <input class="input" id="doc-name" name="name" type="text" maxlength="200" autocomplete="off" required>
+          <span class="field-error" id="doc-name-error" hidden></span>
+        </label>
+
+        <dl class="facts">
+          <div><dt>Kind</dt><dd class="mono" id="doc-kind"></dd></div>
+          <div><dt>Added</dt><dd id="doc-added"></dd></div>
+          <div><dt>Size</dt><dd id="doc-size"></dd></div>
+          <div><dt>Original file</dt><dd id="doc-filename"></dd></div>
+          <div><dt>Document ID</dt><dd class="mono" id="doc-id"></dd></div>
+        </dl>
+
+        <a class="link-open" id="doc-open" target="_blank" rel="noopener">
+          <svg class="icon" aria-hidden="true"><use href="#i-open"/></svg> Open PDF
+        </a>
+
+        <div class="dialog-actions" id="doc-actions">
+          <button class="btn btn-quiet-danger" type="button" data-action="trash">
+            <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg> Trash
+          </button>
+          <button class="btn btn-primary" type="submit" id="doc-save">Done</button>
+        </div>
+
+        <div class="dialog-actions confirm" id="doc-confirm" hidden>
+          <p>Delete this document permanently?</p>
+          <button class="btn" type="button" data-action="cancel-trash">Cancel</button>
+          <button class="btn btn-danger" type="button" data-action="confirm-trash">Delete</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
+
+  <template id="tpl-doc">
+    <li>
+      <button class="doc" type="button">
+        <span class="page"><span class="page-skeleton" aria-hidden="true"></span></span>
+        <span class="doc-name"></span>
+        <span class="doc-kind mono"></span>
+        <span class="doc-meta"></span>
+      </button>
+    </li>
+  </template>
+
+  <template id="tpl-pnc-item">
+    <li>
+      <button class="pnc-item" type="button">
+        <span class="pnc-item-name"></span>
+        <span class="pnc-item-meta">
+          <time class="pnc-item-time"></time>
+          <span class="badge" hidden>API</span>
+        </span>
+      </button>
+    </li>
+  </template>
+</body>
+</html>

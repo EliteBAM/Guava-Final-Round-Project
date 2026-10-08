@@ -1,0 +1,1 @@
+Legal software splits into case-management platforms and intake CRMs, and most of them have some kind of API. The catch is that hardly any will let you build against them unless you're a paying firm, and none I found let you send documents for e-signature through the API.

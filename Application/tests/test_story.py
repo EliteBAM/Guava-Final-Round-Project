@@ -17,6 +17,7 @@ from test_opening import LIVE, instructions_sent, main  # noqa: E402  (shares th
 
 import compliance  # noqa: E402
 import conflicts  # noqa: E402
+import crm  # noqa: E402
 import intake  # noqa: E402
 import mock_api  # noqa: E402
 import qualification  # noqa: E402
@@ -196,15 +197,32 @@ class TestStoryHandlers(unittest.TestCase):
         keys = [item.key for item in self.last_task().action_items if getattr(item, "item_type", "") == "field"]
         self.assertEqual([intake.NARRATIVE.key] + [s.key for s in intake.CORE], keys)
 
-    def test_session_end_writes_the_record(self):
-        self.complete_story()
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(main, "RECORDS_DIR", Path(tmp)):
+    def write_record(self) -> tuple[dict, mock.MagicMock]:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(main, "RECORDS_DIR", Path(tmp)), \
+                mock.patch.object(crm, "upsert_pnc", return_value="ok") as upsert:
             main.write_intake_record(self.call, self.state())
             record = json.loads((Path(tmp) / f"{self.call.id}.json").read_text(encoding="utf-8"))
+        return record, upsert
+
+    def test_session_end_writes_the_record(self):
+        self.complete_story()
+        record, _ = self.write_record()
         self.assertEqual("pending_signature", record["disposition"])
         self.assertEqual("2026-09-30", record["incident"]["date"])
         self.assertEqual("Mark Davis", record["parties"]["adverse"])
         self.assertEqual("clear", record["conflicts"]["status"])
+
+    def test_session_end_sends_the_record_to_the_crm(self):
+        self.call.set_field("caller_type", "new_injury_matter")
+        self.call.set_field("narrative", "Rear-ended at a red light.")
+        self.complete_story()
+        record, upsert = self.write_record()
+        upsert.assert_called_once_with(self.call.id, "Ana Lopez", "Rear-ended at a red light.", record)
+
+    def test_routed_callers_are_not_sent_to_the_crm(self):
+        self.call.set_field("caller_type", "insurance_or_attorney")
+        _, upsert = self.write_record()
+        upsert.assert_not_called()
 
     def test_fee_questions_are_deflected_and_flagged(self):
         for question in ("What percentage do you take?", "Should I sign it?", "Does this cost anything?"):

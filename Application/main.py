@@ -16,6 +16,7 @@ from guava.helpers.rag import DocumentQA
 
 import compliance
 import conflicts
+import crm
 import intake
 import qualification
 import timezones
@@ -705,7 +706,7 @@ def on_session_end(call: guava.Call, event: BotSessionEnded):
 
 
 def write_intake_record(call: guava.Call, state: dict):
-    """The intake record for attorney review, one JSON per call (local stand-in for the CRM, post-call stage)."""
+    """The intake record for attorney review: one JSON file per call, and a PNC in the intake CRM."""
     fields = {key: call.get_field(key) for key in intake.ALL_KEYS}
     record = intake.build_record(fields, state, call.id, datetime.now().astimezone())
     try:
@@ -715,6 +716,12 @@ def write_intake_record(call: guava.Call, state: dict):
         logger.info("Intake record written: %s", path)
     except OSError as exc:
         logger.error("Could not write intake record (session: %s): %s", call.id, exc)
+
+    # PNCs are potential new clients: callers routed to other teams aren't, and a call that ended before the
+    # caller gave a name has no one to follow up with
+    name = record["caller"]["name"]
+    if fields.get("caller_type") in (None, "new_injury_matter") and name:
+        POOL.submit(crm.upsert_pnc, call.id, name, fields.get("narrative") or "", record)
 
 
 # looks like it only inits logger and attaches listen channel if it's main. Suggesting maybe that this could have been a separate agent script for a runner in main?
