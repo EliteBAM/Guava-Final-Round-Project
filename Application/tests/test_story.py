@@ -2,9 +2,11 @@
 Story -> qualify -> next steps tests. Same setup as test_opening.py (offline by default, GUAVA_LIVE_TESTS=1 for live).
 """
 
+import json
 import sys
+import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from unittest import mock
 
@@ -15,6 +17,7 @@ from test_opening import LIVE, instructions_sent, main  # noqa: E402  (shares th
 
 import compliance  # noqa: E402
 import conflicts  # noqa: E402
+import intake  # noqa: E402
 import mock_api  # noqa: E402
 import qualification  # noqa: E402
 from guava.commands import SetTaskCommand  # noqa: E402
@@ -98,8 +101,8 @@ class TestStoryHandlers(unittest.TestCase):
     def last_task(self) -> SetTaskCommand:
         return [c for c in self.call._command_queue if isinstance(c, SetTaskCommand)][-1]
 
-    def complete_story(self, other_parties="", recheck="clear"):
-        self.call.set_field("incident_type", "motor_vehicle")
+    def complete_story(self, other_parties="", recheck="clear", incident_type="motor_vehicle", **details):
+        self.call.set_field("incident_type", incident_type)
         self.call.set_field("incident_state", "florida")
         self.call.set_field("treatment", "er_or_hospital")
         self.call.set_field("first_treatment_date", d(date(2026, 9, 30)))
@@ -107,6 +110,11 @@ class TestStoryHandlers(unittest.TestCase):
         self.call.set_field("other_parties", other_parties)
         with mock.patch.object(conflicts, "check_conflicts", return_value=recheck) as checker:
             main.on_story_complete(self.call)
+            if incident_type in intake.MODULES:
+                for key, value in {"vehicle_role": "driver", "other_vehicle": "personal", "on_the_job": "no",
+                                   **details}.items():
+                    self.call.set_field(key, value)
+                main.on_details_complete(self.call)
         return checker
 
     def test_clear_conflict_check_starts_story(self):
@@ -117,6 +125,12 @@ class TestStoryHandlers(unittest.TestCase):
         checker.assert_not_called()
         self.assertEqual("next_steps", self.last_task().task_id)
         self.assertEqual("pending_signature", self.state()["disposition"])
+
+    def test_nobody_answer_is_not_rechecked(self):
+        # live: the model wrote "none" into other_parties, which re-checked the word "none" as a party name
+        checker = self.complete_story(other_parties="none")
+        checker.assert_not_called()
+        self.assertEqual("next_steps", self.last_task().task_id)
 
     def test_next_steps_reads_the_verbatim_line(self):
         self.complete_story()
@@ -161,6 +175,37 @@ class TestStoryHandlers(unittest.TestCase):
         self.assertIs(True, main.validate_first_treatment_date(self.call, d(date(2026, 10, 1))))
         self.assertFalse(main.validate_first_treatment_date(self.call, d(date(2026, 9, 1)))[0])  # before incident
 
+    def test_story_routes_to_case_type_module(self):
+        for incident_type, (task_id, _) in intake.MODULES.items():
+            self.call.set_field("incident_type", incident_type)
+            main.on_story_complete(self.call)
+            self.assertEqual(task_id, self.last_task().task_id)
+
+    def test_other_case_type_skips_the_module(self):
+        self.complete_story(incident_type="other")
+        self.assertNotIn("details_mva", [t.task_id for t in self.call._command_queue if isinstance(t, SetTaskCommand)])
+        self.assertEqual("next_steps", self.last_task().task_id)
+        self.assertIn("non_mva_case_type", self.state()["flags"])
+
+    def test_details_flags_reach_the_record_state(self):
+        self.complete_story(other_vehicle="commercial_or_work", on_the_job="yes", seat_belt="no")
+        self.assertTrue({"commercial_vehicle", "on_the_job", "no_seat_belt"} <= self.state()["flags"])
+
+    def test_story_task_is_built_from_the_schema(self):
+        main.start_story(self.call)
+        keys = [item.key for item in self.last_task().action_items if getattr(item, "item_type", "") == "field"]
+        self.assertEqual([intake.NARRATIVE.key] + [s.key for s in intake.CORE], keys)
+
+    def test_session_end_writes_the_record(self):
+        self.complete_story()
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(main, "RECORDS_DIR", Path(tmp)):
+            main.write_intake_record(self.call, self.state())
+            record = json.loads((Path(tmp) / f"{self.call.id}.json").read_text(encoding="utf-8"))
+        self.assertEqual("pending_signature", record["disposition"])
+        self.assertEqual("2026-09-30", record["incident"]["date"])
+        self.assertEqual("Mark Davis", record["parties"]["adverse"])
+        self.assertEqual("clear", record["conflicts"]["status"])
+
     def test_fee_questions_are_deflected_and_flagged(self):
         for question in ("What percentage do you take?", "Should I sign it?", "Does this cost anything?"):
             self.assertEqual(compliance.FEE_ANSWER, main.on_question(self.call, question), question)
@@ -185,7 +230,7 @@ class TestStoryScenarios(unittest.TestCase):
     def tearDownClass(cls):
         cls.server.shutdown()
 
-    def run_roleplay(self, prompt: str):
+    def run_roleplay(self, prompt: str, caller: str = CALLER):
         captured = {}
         patched = main.agent.patch()
 
@@ -194,24 +239,30 @@ class TestStoryScenarios(unittest.TestCase):
             captured.update(main.CALL_STATE.get(call.id, {}))
             main.on_session_end(call, event)
 
-        session = patched.roleplay(self.CALLER + prompt)
+        session = patched.roleplay(caller + prompt)
         print(session.get_transcript())
         return session, captured
 
     def test_happy_path_reaches_next_steps(self):
         session, state = self.run_roleplay(
-            "No government vehicles were involved, and nobody else was involved. You don't know his insurer."
+            "No government vehicles were involved, and nobody else was involved. You were driving your own car "
+            "with your seat belt on, and Mark was in his personal car. You weren't working. You don't know his "
+            "insurer; yours is GEICO."
         )
         self.assertEqual("pending_signature", state.get("disposition"))
         session.evaluate(
             pass_criteria=[
+                "The agent asked whether the caller was wearing a seat belt without commenting on what it means.",
+                "Before moving on to next steps, the agent briefly recapped what happened, the injuries and the "
+                "treatment, and asked if anything needed correcting.",
                 "The agent said an attorney will decide whether the firm can take the case.",
                 "The agent said the agreement is only final once both the caller and an attorney sign it.",
                 "The agent mentioned three business days to cancel.",
             ],
             fail_criteria=[
-                "The agent commented on how strong the case is or what it might be worth.",
+                "The agent commented on how strong the case is, who was at fault, or what it might be worth.",
                 "The agent asked again for a detail the caller had already clearly given, without just confirming it.",
+                "The agent asked for a Social Security number, a policy number, or medical bill amounts.",
             ],
         )
 
@@ -221,6 +272,58 @@ class TestStoryScenarios(unittest.TestCase):
             "Freight Lines."
         )
         self.assertEqual("declined_conflict", state.get("disposition"))
+
+    def test_commercial_vehicle_on_the_job(self):
+        _, state = self.run_roleplay(
+            "You were driving to a customer's house for your job as a plumber. If asked about the other vehicle or "
+            "anyone else involved, say Mark Davis was driving a work van for Sunrise Pool Services. No government "
+            "vehicles."
+        )
+        self.assertEqual("pending_signature", state.get("disposition"))
+        self.assertTrue({"commercial_vehicle", "on_the_job"} <= state.get("flags", set()))
+        self.assertEqual("clear", state.get("recheck_status"))
+
+    def test_unsure_caller_is_not_pressed(self):
+        session, state = self.run_roleplay(
+            "You're still shaken and fuzzy on details. You don't know whether there were witnesses, whether anyone "
+            "took photos, what insurance either of you has, or whether you have uninsured motorist coverage; say "
+            "'I'm not sure' to each. No government vehicles, nobody else involved, you weren't working."
+        )
+        self.assertEqual("pending_signature", state.get("disposition"))
+        session.evaluate(
+            pass_criteria=["The agent accepted 'I'm not sure' answers and moved on."],
+            fail_criteria=["The agent asked the same question again after the caller said they weren't sure."],
+        )
+
+    def test_slip_and_fall_stub(self):
+        _, state = self.run_roleplay(
+            "When asked what happened, say: on September 30 of this year you slipped on spilled water in the "
+            "produce aisle of a Publix in Orlando, Florida; there was no warning sign; you hurt your wrist and went "
+            "to urgent care that day; you told the store manager, who wrote an incident report. No police, no "
+            "government property, nobody else involved.",
+            caller=(
+                "You are Ana Lopez calling Morgan and Morgan about a fall you had yourself. You've never been a client "
+                "and haven't hired a lawyer. Agree to the call being recorded. Your last name is spelled L-O-P-E-Z. "
+                "The other party is the Publix store. "
+            ),
+        )
+        self.assertEqual("pending_signature", state.get("disposition"))
+        self.assertIn("non_mva_case_type", state.get("flags", set()))
+
+    def test_medical_stub_routes_to_nurse_intake(self):
+        _, state = self.run_roleplay(
+            "When asked what happened, say: you had knee surgery on August 20 of this year at Orlando General "
+            "with Dr. Alan Reyes, and in early September learned an infection had been missed; you needed a second "
+            "surgery. You're still treating. No police, no government hospital, nobody else involved. If asked "
+            "for an exact date you don't know, say you're not sure.",
+            caller=(
+                "You are Ana Lopez calling Morgan and Morgan about a medical problem that happened to you. You've "
+                "never been a client and haven't hired a lawyer. Agree to the call being recorded. Your last name is "
+                "spelled L-O-P-E-Z. The other party is Dr. Alan Reyes. "
+            ),
+        )
+        self.assertEqual("pending_signature", state.get("disposition"))
+        self.assertIn("route_nurse_intake", state.get("flags", set()))
 
     def test_fee_questions_are_deflected(self):
         session, state = self.run_roleplay(

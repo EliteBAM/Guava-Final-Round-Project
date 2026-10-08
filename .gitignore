@@ -1,3 +1,5 @@
 .env
 Private Information.txt
 __pycache__/
+# per-call intake records: callers' personal details
+Application/intake_records/

@@ -60,6 +60,7 @@
 
 ### Stage 4: Fact gathering
 **Goal:** the caller's story in their own words, then only the missing specifics.
+> **Superseded in detail by** `PI Intake Research.md` (what is collected on the call and why) and `Story Stage Schema and Plan.md` (fields, tiers, record). The list below is the original outline.
 - **First-call questions M&M publishes** (RF §2.1): what happened; where and when; who was affected and involved. Then medical, insurance and evidence.
 - **Core PI facts** (RF §1.5, §2.1):
   - incident type, location (county, for venue)
@@ -211,10 +212,19 @@ For an AI agent, documentation and data entry collapse into a single step: the c
     - **error (2nd), or the caller declines the retry** → a kind ending that suggests calling back later or forthepeople.com.
 
 ### Stage 4: Fact gathering
-*(Revised: Story and Details are one Guava task.)*
-- **One task `story`.** The checklist runs: a bridge `Todo` inviting the caller's account, then the open `narrative` field, then a bridge `Todo` ("thank them, acknowledge their injuries, say you have a few quick questions"), then the detail fields.
-- **Why one task:** the model does fill later fields from information the caller volunteers. This was observed in the opening (early recording consent) and in triage ("I hurt my neck" filled `on_behalf_of`). So whatever the story already covered fills itself, and only the gaps get asked. There is no code-side extraction step and no task transition (no "one moment…" filler) in the middle of the most emotional part of the call.
-- **Incident-specific fields** use a `not_applicable` choice ("if this isn't a vehicle accident, choose not_applicable without asking"), the same trick `on_behalf_of` uses, because Guava has no conditional fields.
+*(Revised again: the core is one task, plus one case-type module task. Spec: `Story Stage Schema and Plan.md`.)*
+- **Task `story`.** The checklist runs:
+  - a bridge `Todo` inviting the caller's account;
+  - the open `narrative` field;
+  - a bridge `Todo` ("thank them, say you have a few questions, confirm rather than re-ask");
+  - the **core** fields from `intake.CORE`.
+- **Module choice (code, on `incident_type`)** picks `details_mva`, `details_premises` or `details_medical`. `other` has no module. Each details task holds only its module's fields and ends with a recap `Todo`.
+- **Why the split:** the field count roughly doubled after the intake research, and about half the fields depend on the case type. A code branch on a typed field replaces many "choose not_applicable without asking" descriptions. The module task shares the conversation, so it confirms what the caller already said instead of re-asking. If live tests show re-asking, the fallback is one task with the module's fields chosen in code.
+- **Tiers drive the questioning** (`guava_field` in `main.py`):
+  - **critical:** required; "unsure" is a valid answer;
+  - **important:** optional, asked once.
+
+  Every field has a "don't know" answer: `not_sure`, `"unknown"`, or the caller's best estimate. A field that can't be resolved stalls the task, and Guava waits until every checklist item is resolved. That also ruled out a "record only if volunteered" tier (spec §1.1, live findings).
 - **Corrections** ("actually it was Tuesday") happen inside the task. They are not a graph edge.
 - **New parties** named in the story go in an optional `other_parties` field, which the `qualify` diamond re-checks.
 - **Risk to watch:** the model may start asking detail questions before the caller has finished their story. The narrative field's guidance tells it to let them finish.
@@ -256,6 +266,7 @@ For an AI agent, documentation and data entry collapse into a single step: the c
     - `POST /leads` (idempotent on `call.id`)
     - render the summary memo, disposition and, if declined, the non-engagement letter
   - Abandoned calls get a `partial_intake` disposition plus a follow-up task.
+  - **Implemented (MVP stand-in):** `write_intake_record` writes `intake.build_record(...)` to `Application/intake_records/{call_id}.json`, with no POST and no memo rendering yet.
   - **No `call.*` commands here** (SDK P10).
 - **Transcript:**
   - Accumulate `on_caller_speech` / `on_agent_speech` per `call.id`, collapsing partials by `utterance_id` (SDK §1.12).
@@ -276,9 +287,11 @@ For an AI agent, documentation and data entry collapse into a single step: the c
 stateDiagram-v2
     state conflict_check <<choice>>
     state qualify <<choice>>
+    state module <<choice>>
 
     [*] --> Opening
     Opening --> Triage
+    Opening --> Wrap: recording declined twice
     Triage --> ConflictScreen: new injury matter, own behalf
     Triage --> RouteMessage: existing client / adjuster / provider
     Triage --> Referral: other legal matter
@@ -294,7 +307,14 @@ stateDiagram-v2
     ConflictRetryOffer --> conflict_check: caller wants a retry
     ConflictRetryOffer --> Wrap: caller declines retry
 
-    Story --> qualify: story + details collected
+    Story --> module: narrative + core collected
+    module --> DetailsMVA: motor_vehicle
+    module --> DetailsPremises: slip_and_fall
+    module --> DetailsMedical: medical_or_nursing_home
+    module --> qualify: other
+    DetailsMVA --> qualify: module details + recap
+    DetailsPremises --> qualify: module details + recap
+    DetailsMedical --> qualify: module details + recap
     qualify --> DeclineConflict: new party named, re-check finds a conflict
     qualify --> NextSteps: no new conflict (flags attached for the attorney)
 
@@ -315,7 +335,7 @@ stateDiagram-v2
 
 Nothing in it is spoken.
 
-**Main path:** Opening → Triage → ConflictScreen → Story → NextSteps → Wrap. Everything else is a side exit. The attorney's decision (countersign, or decline with a non-engagement letter) happens after the call, by a human.
+**Main path:** Opening → Triage → ConflictScreen → Story → DetailsMVA → NextSteps → Wrap. Everything else is a side exit. The attorney's decision (countersign, or decline with a non-engagement letter) happens after the call, by a human.
 
 **Re-check failure policy.** The first conflict check gates *what we hear*, so if it fails, intake stops. The re-check runs *after* the story has been heard, so blocking would protect nothing and would only lose the lead. A failed re-check therefore becomes a `recheck_failed` flag that the attorney sees before deciding. A re-check that finds a **conflict** still declines, with the same sympathetic decline as the first check.
 

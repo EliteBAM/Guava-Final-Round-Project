@@ -82,7 +82,7 @@ class Handler(BaseHTTPRequestHandler):
             names = [str(n) for n in payload.get("names", [])]
             self._send(200, json.dumps({"status": check(names)}).encode())
 
-    def log_message(self, fmt, *args):
+    def log_message(self, format, *args):  # same signature as BaseHTTPRequestHandler
         # never log request bodies: they contain prospective clients' names
         sys.stderr.write("mock_api %s %s\n" % (self.command, self.path))
 

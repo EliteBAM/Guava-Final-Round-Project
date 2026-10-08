@@ -3,9 +3,10 @@ Guava Legal Intake Specialist Agent taylored for Morgan and Morgan injury law fi
 Engineer: Robert Gehr 10-07-2026
 """
 
+import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import guava
@@ -15,12 +16,14 @@ from guava.helpers.rag import DocumentQA
 
 import compliance
 import conflicts
+import intake
 import qualification
 import timezones
 
 logger = logging.getLogger("guava.intro_agent")
 
 CURRENT_DIR = Path(__file__).resolve().parent
+RECORDS_DIR = CURRENT_DIR / "intake_records"
 
 # begin by loading RAG documents from project directory and save it in a DocumentQA Guava Object.
 # explicit utf-8: Windows defaults to cp1252 and fails to decode the docs
@@ -487,9 +490,46 @@ def on_conflict_decline_complete(call: guava.Call):
     call.hangup(final_instructions="Thank them, wish them well in their recovery, and say goodbye.")
 
 
-# Story: the caller's account in their own words, then only the details still missing. One Guava task: the model
-# fills fields from what the caller already said and asks only the gaps (MVP Flow Design.md, Stage 4).
-# Graph: Story -> qualify -> DeclineConflict | NextSteps
+# Story: the caller's account in their own words, then only the details still missing. The fields come from the
+# intake schema (intake.py): the common core here, then the case-type module in its own task.
+# Graph: Story -> module -> Details* -> qualify -> DeclineConflict | NextSteps
+
+# how each tier is asked (Story Stage Schema and Plan.md, 1.1)
+TIER_GUIDANCE = {
+    intake.CRITICAL: "Don't press if they don't know.",
+    intake.IMPORTANT: "Ask once if they haven't already mentioned it.",
+}
+
+
+def unknown_hint(spec: intake.FieldSpec) -> str:
+    """Every field needs a value for "I don't know": a field the model asked about but can't fill keeps the task
+    from completing, and the agent stalls (seen live with other_insurer)."""
+    if "not_sure" in spec.choices:
+        return " If they don't know, choose not_sure and move on."
+    if spec.kind == "text":
+        return " If they don't know or would rather not say, write \"unknown\" and move on."
+    if spec.kind == "date":
+        return " If they can't recall the exact date, take their best estimate; if they have no idea, skip it."
+    return ""
+
+# shared by the story and details tasks
+STORY_OBJECTIVE_RULES = (
+    "Gather facts only, one question at a time, and ask neutrally about what each person was doing. Never comment on "
+    "fault, case strength, insurance coverage, deadlines, or what an answer means for their case. Never ask for a "
+    "Social Security number, policy numbers, or medical bills; the team collects those later on a short form."
+)
+
+
+def guava_field(spec: intake.FieldSpec) -> guava.Field:
+    """My helper, not a Guava API: builds the Guava field from the schema, with the tier deciding how it's asked."""
+    return guava.Field(
+        key=spec.key,
+        field_type=spec.kind,
+        description=f"{spec.ask} {TIER_GUIDANCE[spec.tier]}{unknown_hint(spec)}",
+        choices=list(spec.choices),
+        required=spec.tier == intake.CRITICAL and not spec.optional,
+    )
+
 
 def start_story(call: guava.Call):
     call_state(call)["task"] = "story"
@@ -497,97 +537,33 @@ def start_story(call: guava.Call):
         "story",
         objective=(
             "Hear what happened in the caller's own words, then fill in only the details they haven't already "
-            "covered. Never comment on fault, case strength, or what the case might be worth."
+            "covered. " + STORY_OBJECTIVE_RULES
         ),
         checklist=[
-            "Thank them for their patience. Invite them to tell you what happened in their own words, at their own pace.",
-            guava.Field(
-                key="narrative",
-                field_type="text",
-                description=(
-                    "Their account of what happened. Let them finish before asking anything else, "
-                    "and acknowledge any injuries with care."
-                ),
-                required=True,
-            ),
-            "Thank them for walking you through it, and let them know you have a few quick questions. For anything "
-            "they already mentioned, briefly confirm it instead of asking again.",
-            guava.Field(
-                key="incident_type",
-                field_type="multiple_choice",
-                choices=["motor_vehicle", "slip_and_fall", "medical_or_nursing_home", "other"],
-                description="What kind of incident it was.",
-                required=True,
-            ),
-            guava.Field(
-                key="incident_state",
-                field_type="multiple_choice",
-                choices=["florida", "other_state"],
-                description="Whether it happened in Florida or another state.",
-                required=True,
-            ),
-            guava.Field(
-                key="incident_location",
-                field_type="text",
-                description="The city or county where it happened.",
-                required=False,
-            ),
-            guava.Field(key="injuries", field_type="text", description="Their injuries.", required=True),
-            guava.Field(
-                key="treatment",
-                field_type="multiple_choice",
-                choices=["er_or_hospital", "doctor_or_urgent_care", "none_yet"],
-                description="The medical care they've had so far, if any.",
-                required=True,
-            ),
-            guava.Field(
-                key="first_treatment_date",
-                field_type="date",
-                description="The date they were first treated. Only ask if they've had treatment.",
-                required=False,
-            ),
-            guava.Field(
-                key="vehicle_role",
-                field_type="multiple_choice",
-                choices=["driver", "passenger", "pedestrian", "cyclist", "motorcyclist", "not_applicable"],
-                description=(
-                    "Their role in the vehicle accident. If it wasn't a vehicle accident, choose not_applicable "
-                    "without asking."
-                ),
-                required=True,
-            ),
-            guava.Field(
-                key="police_report",
-                field_type="multiple_choice",
-                choices=["yes", "no", "not_sure"],
-                description="Whether a police report was made.",
-                required=True,
-            ),
-            guava.Field(
-                key="government_involved",
-                field_type="multiple_choice",
-                choices=["yes", "no", "not_sure"],
-                description=(
-                    "Whether a government vehicle or property was involved, such as a city bus, police car, "
-                    "or public property."
-                ),
-                required=True,
-            ),
-            guava.Field(
-                key="other_insurer",
-                field_type="text",
-                description="The other party's insurance company, if they know it.",
-                required=False,
-            ),
-            guava.Field(
-                key="other_parties",
-                field_type="text",
-                description=(
-                    "Anyone else involved whom they haven't already named, such as the other driver's employer or a "
-                    "business. It's fine if there's no one."
-                ),
-                required=False,
-            ),
+            "Thank them for their patience. Invite them to tell you what happened in their own words, at their own "
+            "pace. If they sound upset, let them know there's no rush.",
+            guava_field(intake.NARRATIVE),
+            "Thank them for walking you through it, and let them know you have a few questions so the attorney has "
+            "the full picture. Use their own words for what happened. For anything they already mentioned, briefly "
+            "confirm it instead of asking again.",
+            *[guava_field(spec) for spec in intake.CORE],
+        ],
+    )
+
+
+def start_details(call: guava.Call, task_id: str, specs: tuple[intake.FieldSpec, ...]):
+    """The case-type module: the same conversation continues, so anything already said is confirmed, not re-asked."""
+    call_state(call)["task"] = task_id
+    call.set_task(
+        task_id,
+        objective=(
+            "Fill in the remaining details for this kind of case, confirming anything the caller already said "
+            "instead of asking again. " + STORY_OBJECTIVE_RULES
+        ),
+        checklist=[
+            *[guava_field(spec) for spec in specs],
+            "Briefly recap what happened, their injuries, and their treatment in a sentence or two, and ask if "
+            "anything needs correcting.",
         ],
     )
 
@@ -609,17 +585,37 @@ def validate_first_treatment_date(call: guava.Call, value) -> bool | tuple[bool,
 
 QUALIFY_FIELDS = (
     "incident_date", "incident_type", "incident_state", "treatment", "first_treatment_date", "government_involved",
+    "other_vehicle", "on_the_job", "insurer_contact", "prior_similar_injury", "seat_belt",
 )
 
 
 @agent.on_task_complete("story")
 def on_story_complete(call: guava.Call):
+    """The module choice: the case type picks the details task; "other" has none and goes straight to qualify."""
+    module = intake.MODULES.get(call.get_field("incident_type"))
+    if module:
+        start_details(call, *module)
+    else:
+        run_qualify(call)
+
+
+def on_details_complete(call: guava.Call):
+    run_qualify(call)
+
+
+# every details task ends the same way
+for details_task_id, _ in intake.MODULES.values():
+    agent.on_task_complete(details_task_id)(on_details_complete)
+
+
+def run_qualify(call: guava.Call):
     """The qualify step: attach flags for the attorney (never spoken), re-check any newly named parties, route."""
     state = call_state(call)
     state["flags"] |= qualification.flags({key: call.get_field(key) for key in QUALIFY_FIELDS}, date.today())
     logger.info("Story complete, flags=%s (session: %s)", sorted(state["flags"]), call.id)
 
-    other_parties = (call.get_field("other_parties") or "").strip()
+    # the model often writes "none" rather than leaving the field empty; code decides what counts as a name
+    other_parties = intake.named_parties(call.get_field("other_parties"))
     if other_parties:
         POOL.submit(run_recheck, call, other_parties)
     else:
@@ -631,6 +627,7 @@ def run_recheck(call: guava.Call, other_parties: str):
     the call; it becomes a flag the attorney sees (MVP Flow Design.md, re-check failure policy)."""
     state = call_state(call)
     status = conflicts.check_conflicts([other_parties])
+    state["recheck_status"] = status
     logger.info("Conflict re-check: %s (session: %s)", status, call.id)
     if status == "conflict":
         start_conflict_decline(call)
@@ -662,7 +659,9 @@ def start_next_steps(call: guava.Call):
             "attorney and team are typically assigned within about a week. In the meantime, suggest they gather any "
             "photos, the police report number, medical records, and insurance cards.",
             "Explain the documents: they'll first receive a Statement of Client's Rights, which they should read in "
-            "full, and then the fee agreement, which they can sign whenever they're ready. There's no pressure.",
+            "full, and then the fee agreement, which they can sign whenever they're ready. There's no pressure. "
+            "They'll also get a short form for details like their insurance policies and their doctors' contact "
+            "information.",
             guava.Say(compliance.NEXT_STEPS_SCRIPT),
             "Let them know that if they have any questions about the statement or the agreement before signing, an "
             "attorney can go over them. Then ask if there's anything else you can help with.",
@@ -702,6 +701,20 @@ def on_session_end(call: guava.Call, event: BotSessionEnded):
         state.get("disposition") or "partial_intake",
         event.termination_reason,
     )
+    write_intake_record(call, state)
+
+
+def write_intake_record(call: guava.Call, state: dict):
+    """The intake record for attorney review, one JSON per call (local stand-in for the CRM, post-call stage)."""
+    fields = {key: call.get_field(key) for key in intake.ALL_KEYS}
+    record = intake.build_record(fields, state, call.id, datetime.now().astimezone())
+    try:
+        RECORDS_DIR.mkdir(exist_ok=True)
+        path = RECORDS_DIR / f"{call.id}.json"
+        path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+        logger.info("Intake record written: %s", path)
+    except OSError as exc:
+        logger.error("Could not write intake record (session: %s): %s", call.id, exc)
 
 
 # looks like it only inits logger and attaches listen channel if it's main. Suggesting maybe that this could have been a separate agent script for a runner in main?

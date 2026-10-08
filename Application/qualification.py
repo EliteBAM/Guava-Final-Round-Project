@@ -10,6 +10,7 @@ Sources (Research Findings.md):
 - Fla. Stat. 627.736(1)(a): PIP requires initial treatment within 14 days of a motor vehicle accident (RF 1.5).
 - Government defendants need written pre-suit notice within 3 years (RF Key takeaway 6).
 - M&M routes medical malpractice and nursing-home claims to RN screeners (RF 1.1 #7).
+- Coverage and defendant flags from the Story details (PI Intake Research.md, PIR 2.2 and 3).
 """
 
 from datetime import date, timedelta
@@ -17,6 +18,8 @@ from datetime import date, timedelta
 HB_837_EFFECTIVE = date(2023, 3, 24)
 SOL_URGENT_DAYS = 90
 PIP_TREATMENT_DAYS = 14
+
+OTHER_VEHICLE_FLAGS = {"commercial_or_work": "commercial_vehicle", "rideshare": "rideshare", "hit_and_run": "hit_and_run"}
 
 
 def as_date(value) -> date | None:
@@ -75,4 +78,16 @@ def flags(fields: dict, today: date) -> set[str]:
         result.add("government_defendant")
     if fields.get("incident_state") == "other_state":
         result.add("out_of_state")
+
+    # extra defendants or coverage the attorney should know about (PIR 2.2)
+    if fields.get("other_vehicle") in OTHER_VEHICLE_FLAGS:
+        result.add(OTHER_VEHICLE_FLAGS[fields["other_vehicle"]])
+    if fields.get("on_the_job") == "yes":
+        result.add("on_the_job")  # workers' comp overlap
+    if fields.get("insurer_contact") == "gave_statement":
+        result.add("statement_given")
+    if fields.get("prior_similar_injury") == "yes":
+        result.add("prior_similar_injury")
+    if fields.get("seat_belt") == "no":
+        result.add("no_seat_belt")
     return result
